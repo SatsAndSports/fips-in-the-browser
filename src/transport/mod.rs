@@ -13,6 +13,9 @@ pub mod ethernet;
 
 pub mod ble;
 
+#[cfg(feature = "webtransport")]
+pub mod webtransport;
+
 use secp256k1::XOnlyPublicKey;
 use udp::UdpTransport;
 use tcp::TcpTransport;
@@ -22,6 +25,8 @@ use tor::TorTransport;
 use ethernet::EthernetTransport;
 #[cfg(target_os = "linux")]
 use ble::DefaultBleTransport;
+#[cfg(feature = "webtransport")]
+use webtransport::WebTransportTransport;
 use std::fmt;
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -244,6 +249,13 @@ impl TransportType {
         name: "ble",
         connection_oriented: true,
         reliable: true, // L2CAP SeqPacket guarantees delivery
+    };
+
+    /// WebTransport (QUIC datagram) transport.
+    pub const WEBTRANSPORT: TransportType = TransportType {
+        name: "webtransport",
+        connection_oriented: true,  // QUIC session establishment
+        reliable: false,            // datagrams are unreliable
     };
 
     /// Check if the transport is connectionless.
@@ -861,6 +873,9 @@ pub enum TransportHandle {
     /// BLE L2CAP transport.
     #[cfg(target_os = "linux")]
     Ble(DefaultBleTransport),
+    /// WebTransport (QUIC datagram) transport.
+    #[cfg(feature = "webtransport")]
+    WebTransport(WebTransportTransport),
 }
 
 impl TransportHandle {
@@ -874,6 +889,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.start_async().await,
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.start_async().await,
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.start_async().await,
         }
     }
 
@@ -887,6 +904,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.stop_async().await,
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.stop_async().await,
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.stop_async().await,
         }
     }
 
@@ -900,6 +919,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.send_async(addr, data).await,
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.send_async(addr, data).await,
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.send_async(addr, data).await,
         }
     }
 
@@ -913,6 +934,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.transport_id(),
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.transport_id(),
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.transport_id(),
         }
     }
 
@@ -926,6 +949,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.name(),
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.name(),
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.name(),
         }
     }
 
@@ -939,6 +964,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.transport_type(),
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.transport_type(),
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.transport_type(),
         }
     }
 
@@ -952,6 +979,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.state(),
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.state(),
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.state(),
         }
     }
 
@@ -965,6 +994,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.mtu(),
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.mtu(),
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.mtu(),
         }
     }
 
@@ -981,6 +1012,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.link_mtu(addr),
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.link_mtu(addr),
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.link_mtu(addr),
         }
     }
 
@@ -994,6 +1027,8 @@ impl TransportHandle {
             TransportHandle::Tor(_) => None,
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(_) => None,
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(_) => None,
         }
     }
 
@@ -1007,6 +1042,8 @@ impl TransportHandle {
             TransportHandle::Tor(_) => None,
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(_) => None,
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(_) => None,
         }
     }
 
@@ -1044,6 +1081,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.discover(),
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.discover(),
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.discover(),
         }
     }
 
@@ -1057,6 +1096,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.auto_connect(),
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.auto_connect(),
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.auto_connect(),
         }
     }
 
@@ -1070,6 +1111,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.accept_connections(),
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.accept_connections(),
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.accept_connections(),
         }
     }
 
@@ -1089,6 +1132,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.connect_async(addr).await,
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.connect_async(addr).await,
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.connect_async(addr).await,
         }
     }
 
@@ -1106,6 +1151,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.connection_state_sync(addr),
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.connection_state_sync(addr),
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.connection_state_sync(addr),
         }
     }
 
@@ -1122,6 +1169,8 @@ impl TransportHandle {
             TransportHandle::Tor(t) => t.close_connection_async(addr).await,
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => t.close_connection_async(addr).await,
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => t.close_connection_async(addr).await,
         }
     }
 
@@ -1144,6 +1193,8 @@ impl TransportHandle {
             TransportHandle::Tor(_) => TransportCongestion::default(),
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(_) => TransportCongestion::default(),
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(_) => TransportCongestion::default(),
         }
     }
 
@@ -1179,6 +1230,10 @@ impl TransportHandle {
             }
             #[cfg(target_os = "linux")]
             TransportHandle::Ble(t) => {
+                serde_json::to_value(t.stats().snapshot()).unwrap_or_default()
+            }
+            #[cfg(feature = "webtransport")]
+            TransportHandle::WebTransport(t) => {
                 serde_json::to_value(t.stats().snapshot()).unwrap_or_default()
             }
         }

@@ -112,15 +112,12 @@ impl<T> TransportInstances<T> {
     /// Named instances have `Some(name)`.
     pub fn iter(&self) -> impl Iterator<Item = (Option<&str>, &T)> {
         match self {
-            TransportInstances::Single(config) => {
-                vec![(None, config)].into_iter()
-            }
-            TransportInstances::Named(map) => {
-                map.iter()
-                    .map(|(k, v)| (Some(k.as_str()), v))
-                    .collect::<Vec<_>>()
-                    .into_iter()
-            }
+            TransportInstances::Single(config) => vec![(None, config)].into_iter(),
+            TransportInstances::Named(map) => map
+                .iter()
+                .map(|(k, v)| (Some(k.as_str()), v))
+                .collect::<Vec<_>>()
+                .into_iter(),
         }
     }
 }
@@ -306,7 +303,8 @@ impl TcpConfig {
 
     /// Get the connect timeout in milliseconds.
     pub fn connect_timeout_ms(&self) -> u64 {
-        self.connect_timeout_ms.unwrap_or(DEFAULT_TCP_CONNECT_TIMEOUT_MS)
+        self.connect_timeout_ms
+            .unwrap_or(DEFAULT_TCP_CONNECT_TIMEOUT_MS)
     }
 
     /// Whether TCP_NODELAY is enabled. Default: true.
@@ -331,7 +329,8 @@ impl TcpConfig {
 
     /// Get the maximum number of inbound connections. Default: 256.
     pub fn max_inbound_connections(&self) -> usize {
-        self.max_inbound_connections.unwrap_or(DEFAULT_TCP_MAX_INBOUND)
+        self.max_inbound_connections
+            .unwrap_or(DEFAULT_TCP_MAX_INBOUND)
     }
 }
 
@@ -447,12 +446,16 @@ pub struct DirectoryServiceConfig {
 impl DirectoryServiceConfig {
     /// Path to the hostname file. Default: "/var/lib/tor/fips_onion_service/hostname".
     pub fn hostname_file(&self) -> &str {
-        self.hostname_file.as_deref().unwrap_or(DEFAULT_HOSTNAME_FILE)
+        self.hostname_file
+            .as_deref()
+            .unwrap_or(DEFAULT_HOSTNAME_FILE)
     }
 
     /// Local bind address for the listener. Default: "127.0.0.1:8443".
     pub fn bind_addr(&self) -> &str {
-        self.bind_addr.as_deref().unwrap_or(DEFAULT_DIRECTORY_BIND_ADDR)
+        self.bind_addr
+            .as_deref()
+            .unwrap_or(DEFAULT_DIRECTORY_BIND_ADDR)
     }
 }
 
@@ -464,12 +467,16 @@ impl TorConfig {
 
     /// Get the SOCKS5 proxy address. Default: "127.0.0.1:9050".
     pub fn socks5_addr(&self) -> &str {
-        self.socks5_addr.as_deref().unwrap_or(DEFAULT_TOR_SOCKS5_ADDR)
+        self.socks5_addr
+            .as_deref()
+            .unwrap_or(DEFAULT_TOR_SOCKS5_ADDR)
     }
 
     /// Get the control port address. Default: "/run/tor/control".
     pub fn control_addr(&self) -> &str {
-        self.control_addr.as_deref().unwrap_or(DEFAULT_TOR_CONTROL_ADDR)
+        self.control_addr
+            .as_deref()
+            .unwrap_or(DEFAULT_TOR_CONTROL_ADDR)
     }
 
     /// Get the control auth string. Default: "cookie".
@@ -479,12 +486,15 @@ impl TorConfig {
 
     /// Get the cookie file path. Default: "/var/run/tor/control.authcookie".
     pub fn cookie_path(&self) -> &str {
-        self.cookie_path.as_deref().unwrap_or(DEFAULT_TOR_COOKIE_PATH)
+        self.cookie_path
+            .as_deref()
+            .unwrap_or(DEFAULT_TOR_COOKIE_PATH)
     }
 
     /// Get the connect timeout in milliseconds. Default: 120000.
     pub fn connect_timeout_ms(&self) -> u64 {
-        self.connect_timeout_ms.unwrap_or(DEFAULT_TOR_CONNECT_TIMEOUT_MS)
+        self.connect_timeout_ms
+            .unwrap_or(DEFAULT_TOR_CONNECT_TIMEOUT_MS)
     }
 
     /// Get the default MTU. Default: 1400.
@@ -494,7 +504,8 @@ impl TorConfig {
 
     /// Get the max inbound connections. Default: 64.
     pub fn max_inbound_connections(&self) -> usize {
-        self.max_inbound_connections.unwrap_or(DEFAULT_TOR_MAX_INBOUND)
+        self.max_inbound_connections
+            .unwrap_or(DEFAULT_TOR_MAX_INBOUND)
     }
 }
 
@@ -622,6 +633,83 @@ impl BleConfig {
 }
 
 // ============================================================================
+// WebTransport Configuration
+// ============================================================================
+
+/// Default WebTransport datagram MTU.
+///
+/// QUIC datagrams are bounded by path MTU. Conservative default that fits
+/// in a single QUIC packet on most networks.
+const DEFAULT_WEBTRANSPORT_MTU: u16 = 1200;
+
+/// WebTransport transport instance configuration.
+///
+/// When `bind_addr` is set the transport runs in server mode (listens for
+/// incoming WebTransport sessions). Peers that reference this transport by
+/// type `"webtransport"` connect as clients.
+///
+/// TLS is mandatory for QUIC/HTTP3. The transport loads a persistent
+/// certificate and private key from `cert_file` / `key_file`. If the files
+/// do not exist on first startup, a self-signed certificate is generated
+/// and saved automatically.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebTransportConfig {
+    /// Server bind address (`host:port`). When set, the transport also
+    /// listens for incoming WebTransport sessions. When absent, the
+    /// transport operates in client-only mode (outbound connections only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind_addr: Option<String>,
+
+    /// Path to the TLS certificate PEM file.
+    /// If absent (and `key_file` is also absent), a self-signed certificate
+    /// is generated and persisted to `/etc/fips/wt-cert.pem`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cert_file: Option<String>,
+
+    /// Path to the TLS private key PEM file.
+    /// If absent (and `cert_file` is also absent), a private key is
+    /// generated and persisted to `/etc/fips/wt-key.pem`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_file: Option<String>,
+
+    /// Datagram MTU. Defaults to 1200.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtu: Option<u16>,
+
+    /// Whether to accept incoming WebTransport sessions. Default: true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accept_connections: Option<bool>,
+}
+
+impl WebTransportConfig {
+    /// Get the bind address. `None` means client-only (no server listener).
+    pub fn bind_addr(&self) -> Option<&str> {
+        self.bind_addr.as_deref()
+    }
+
+    /// Get the cert file path. Default: "/etc/fips/wt-cert.pem".
+    pub fn cert_file(&self) -> &str {
+        self.cert_file.as_deref().unwrap_or("/etc/fips/wt-cert.pem")
+    }
+
+    /// Get the key file path. Default: "/etc/fips/wt-key.pem".
+    pub fn key_file(&self) -> &str {
+        self.key_file.as_deref().unwrap_or("/etc/fips/wt-key.pem")
+    }
+
+    /// Get the datagram MTU. Default: 1200.
+    pub fn mtu(&self) -> u16 {
+        self.mtu.unwrap_or(DEFAULT_WEBTRANSPORT_MTU)
+    }
+
+    /// Whether to accept incoming connections. Default: true.
+    pub fn accept_connections(&self) -> bool {
+        self.accept_connections.unwrap_or(true)
+    }
+}
+
+// ============================================================================
 // TransportsConfig
 // ============================================================================
 
@@ -650,6 +738,10 @@ pub struct TransportsConfig {
     /// BLE transport instances.
     #[serde(default, skip_serializing_if = "is_transport_empty")]
     pub ble: TransportInstances<BleConfig>,
+
+    /// WebTransport instances.
+    #[serde(default, skip_serializing_if = "is_transport_empty")]
+    pub webtransport: TransportInstances<WebTransportConfig>,
 }
 
 /// Helper for skip_serializing_if on TransportInstances.
@@ -665,6 +757,7 @@ impl TransportsConfig {
             && self.tcp.is_empty()
             && self.tor.is_empty()
             && self.ble.is_empty()
+            && self.webtransport.is_empty()
     }
 
     /// Merge another TransportsConfig into this one.
@@ -685,6 +778,9 @@ impl TransportsConfig {
         }
         if !other.ble.is_empty() {
             self.ble = other.ble;
+        }
+        if !other.webtransport.is_empty() {
+            self.webtransport = other.webtransport;
         }
     }
 }

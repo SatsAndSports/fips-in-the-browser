@@ -34,7 +34,10 @@ pub use node::{
     TreeConfig,
 };
 pub use peer::{ConnectPolicy, PeerAddress, PeerConfig};
-pub use transport::{BleConfig, DirectoryServiceConfig, EthernetConfig, TcpConfig, TorConfig, TransportInstances, TransportsConfig, UdpConfig};
+pub use transport::{
+    BleConfig, DirectoryServiceConfig, EthernetConfig, TcpConfig, TorConfig, TransportInstances,
+    TransportsConfig, UdpConfig, WebTransportConfig,
+};
 
 /// Default config filename.
 const CONFIG_FILENAME: &str = "fips.yaml";
@@ -539,10 +542,7 @@ node:
         override_config.node.identity.nsec = Some("override_nsec".to_string());
 
         base.merge(override_config);
-        assert_eq!(
-            base.node.identity.nsec,
-            Some("override_nsec".to_string())
-        );
+        assert_eq!(base.node.identity.nsec, Some("override_nsec".to_string()));
     }
 
     #[test]
@@ -559,9 +559,8 @@ node:
     #[test]
     fn test_create_identity_from_nsec() {
         let mut config = Config::new();
-        config.node.identity.nsec = Some(
-            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".to_string(),
-        );
+        config.node.identity.nsec =
+            Some("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".to_string());
 
         let identity = config.create_identity().unwrap();
         assert!(!identity.npub().is_empty());
@@ -747,16 +746,21 @@ node:
     #[test]
     fn test_key_file_path_derivation() {
         let config_path = PathBuf::from("/etc/fips/fips.yaml");
-        assert_eq!(key_file_path(&config_path), PathBuf::from("/etc/fips/fips.key"));
-        assert_eq!(pub_file_path(&config_path), PathBuf::from("/etc/fips/fips.pub"));
+        assert_eq!(
+            key_file_path(&config_path),
+            PathBuf::from("/etc/fips/fips.key")
+        );
+        assert_eq!(
+            pub_file_path(&config_path),
+            PathBuf::from("/etc/fips/fips.pub")
+        );
     }
 
     #[test]
     fn test_resolve_identity_from_config() {
         let mut config = Config::new();
-        config.node.identity.nsec = Some(
-            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".to_string(),
-        );
+        config.node.identity.nsec =
+            Some("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20".to_string());
 
         let resolved = resolve_identity(&config, &[]).unwrap();
         assert!(matches!(resolved.source, IdentitySource::Config));
@@ -803,11 +807,7 @@ node:
         let config_path = temp_dir.path().join("fips.yaml");
         let key_path = temp_dir.path().join("fips.key");
 
-        fs::write(
-            &config_path,
-            "node:\n  identity:\n    persistent: true\n",
-        )
-        .unwrap();
+        fs::write(&config_path, "node:\n  identity:\n    persistent: true\n").unwrap();
 
         // Write a key file
         let identity = crate::Identity::generate();
@@ -827,11 +827,7 @@ node:
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("fips.yaml");
 
-        fs::write(
-            &config_path,
-            "node:\n  identity:\n    persistent: true\n",
-        )
-        .unwrap();
+        fs::write(&config_path, "node:\n  identity:\n    persistent: true\n").unwrap();
 
         let config = Config::load_file(&config_path).unwrap();
         let resolved = resolve_identity(&config, std::slice::from_ref(&config_path)).unwrap();
@@ -892,8 +888,7 @@ transports:
 
         assert_eq!(config.transports.udp.len(), 2);
 
-        let instances: std::collections::HashMap<_, _> =
-            config.transports.udp.iter().collect();
+        let instances: std::collections::HashMap<_, _> = config.transports.udp.iter().collect();
 
         // Named instances have Some(name)
         assert!(instances.contains_key(&Some("main")));

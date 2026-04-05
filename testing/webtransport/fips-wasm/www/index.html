@@ -239,10 +239,21 @@ $btnConnect.addEventListener('click', async () => {
       }],
     });
     await transport.ready;
-    log('log-info', 'WebTransport connected.');
+
+    const maxDgram = transport.datagrams.maxDatagramSize;
+    const fmpOverhead = 37; // encrypted header(16) + AEAD tag(16) + inner header(5)
+    const fmpMaxPayload = maxDgram - fmpOverhead;
+    const ipv6Fits = fmpMaxPayload >= 1280;
+    log('log-info', `WebTransport connected.`);
+    log('log-info', `  maxDatagramSize: ${maxDgram} bytes`);
+    log('log-info', `  FMP max payload: ${fmpMaxPayload} bytes (after ${fmpOverhead}B overhead)`);
+    log('log-info', `  IPv6 min-MTU (1280) fits: ${ipv6Fits ? 'YES' : 'NO'}`);
 
     writer = transport.datagrams.writable.getWriter();
     reader = transport.datagrams.readable.getReader();
+
+    // Monitor PMTU discovery
+    startMtuMonitor();
 
     // 2. Initiate Noise IK handshake
     setStatus('Handshaking...', 'handshaking');
@@ -325,6 +336,26 @@ async function send() {
 
 $btnSend.addEventListener('click', send);
 $msg.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+
+// ── MTU monitoring ────────────────────────────────────
+
+// Chrome may increase maxDatagramSize as PMTU discovery runs.
+// Monitor it for the first 30 seconds to see if it changes.
+function startMtuMonitor() {
+  if (!transport) return;
+  let lastSize = transport.datagrams.maxDatagramSize;
+  let checks = 0;
+  const interval = setInterval(() => {
+    checks++;
+    if (!transport || checks > 15) { clearInterval(interval); return; }
+    const current = transport.datagrams.maxDatagramSize;
+    if (current !== lastSize) {
+      const fmpPayload = current - 37;
+      log('log-info', `  MTU changed: maxDatagramSize ${lastSize} → ${current} bytes (FMP payload: ${fmpPayload}, IPv6 fits: ${fmpPayload >= 1280 ? 'YES' : 'NO'})`);
+      lastSize = current;
+    }
+  }, 2000);
+}
 
 // ── Browser support check ─────────────────────────────
 

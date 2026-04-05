@@ -184,15 +184,22 @@ impl FipsNode {
                 // The counter for the AEAD nonce
                 let counter = send_cipher.nonce();
 
-                // Build the 16-byte header (used as AAD)
-                let header_bytes = build_header_bytes(0, *remote_idx, counter);
+                // payload_len = inner plaintext length (matches what the
+                // server puts in the header and uses as AAD for decryption)
+                let payload_len = inner.len() as u16;
+
+                // Build the 16-byte header — used as both AAD and wire header
+                let header_bytes = build_header_bytes(0, payload_len, *remote_idx, counter);
 
                 // Encrypt with AAD
                 let ciphertext = send_cipher
                     .encrypt_with_aad(&inner, &header_bytes)
                     .map_err(|e| JsValue::from_str(&e))?;
 
-                let pkt = wire::build_encrypted_frame(0, *remote_idx, counter, &ciphertext);
+                // Assemble wire packet: header(16) + ciphertext+tag
+                let mut pkt = Vec::with_capacity(16 + ciphertext.len());
+                pkt.extend_from_slice(&header_bytes);
+                pkt.extend_from_slice(&ciphertext);
                 Ok(pkt)
             }
             LinkState::Handshaking { .. } => Err(JsValue::from_str("handshake not complete")),
@@ -320,13 +327,15 @@ impl FipsNode {
 }
 
 /// Build the 16-byte header bytes for AEAD AAD.
-fn build_header_bytes(flags: u8, receiver_idx: u32, counter: u64) -> [u8; 16] {
+///
+/// `payload_len` is the length of the inner plaintext (before AEAD tag).
+/// This MUST match what appears on the wire, since the receiver uses the
+/// wire header bytes as AAD for decryption.
+fn build_header_bytes(flags: u8, payload_len: u16, receiver_idx: u32, counter: u64) -> [u8; 16] {
     let mut hdr = [0u8; 16];
     hdr[0] = (wire::FMP_VERSION << 4) | wire::PHASE_ESTABLISHED;
     hdr[1] = flags;
-    // payload_len at [2..4] — we leave as 0 for now (the AEAD tag makes
-    // the length self-evident, and fips doesn't validate this field for
-    // established frames)
+    hdr[2..4].copy_from_slice(&payload_len.to_le_bytes());
     hdr[4..8].copy_from_slice(&receiver_idx.to_le_bytes());
     hdr[8..16].copy_from_slice(&counter.to_le_bytes());
     hdr

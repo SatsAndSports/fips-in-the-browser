@@ -40,7 +40,7 @@ simple-dns = "0.11.2"
 socket2 = { version = "0.6.2", features = ["all"] }
 tokio-socks = "0.5"
 bluer = { version = "0.17", features = ["bluetoothd", "l2cap"], optional = true }
-wtransport = { version = "0.7", features = ["dangerous-configuration"], optional = true }
+wtransport = { version = "0.7", features = ["dangerous-configuration", "quinn"], optional = true }
 
 [package.metadata.deb]
 maintainer = "Johnathan Corgan <jcorgan@corganlabs.com>"

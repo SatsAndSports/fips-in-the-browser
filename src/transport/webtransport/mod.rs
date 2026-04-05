@@ -22,8 +22,24 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
+use wtransport::config::QuicTransportConfig;
 use wtransport::tls::Sha256DigestFmt;
 use wtransport::{Connection, Endpoint, Identity, ServerConfig};
+
+/// Default initial MTU (UDP payload size) for QUIC connections.
+///
+/// 1452 bytes fits standard 1500-byte Ethernet with IPv6 + UDP headers
+/// (1500 - 40 - 8 = 1452). This is also quinn's default PMTU discovery
+/// upper bound. After subtracting QUIC/H3/WebTransport overhead (~23 bytes),
+/// this gives ~1429 bytes of datagram payload — enough for a full IPv6
+/// minimum-MTU packet (1280) wrapped in FMP framing (37 bytes overhead).
+const DEFAULT_INITIAL_MTU: u16 = 1452;
+
+/// Minimum MTU floor for QUIC (RFC 9000 minimum).
+const DEFAULT_MIN_MTU: u16 = 1200;
+
+/// FMP overhead: encrypted header (16) + AEAD tag (16) + inner header (5).
+const FMP_OVERHEAD: usize = 37;
 
 /// WebTransport transport for FIPS.
 ///
@@ -63,6 +79,10 @@ struct SessionEntry {
     connection: Connection,
     /// Datagram receive loop task handle.
     recv_task: JoinHandle<()>,
+    /// Maximum WebTransport datagram payload (from QUIC PMTU discovery).
+    /// This is the value from `connection.max_datagram_size()` at session
+    /// establishment time.
+    max_datagram_size: Option<usize>,
 }
 
 /// A pending client connection attempt.
@@ -142,9 +162,13 @@ impl WebTransportTransport {
                 TransportError::StartFailed(format!("invalid bind address: {e}"))
             })?;
 
+            // Configure quinn's QUIC transport with PMTU discovery and
+            // a higher initial MTU so IPv6 packets fit from the start.
+            let quic_transport = build_quic_transport_config();
+
             let server_config = ServerConfig::builder()
                 .with_bind_address(bind_addr)
-                .with_identity(identity)
+                .with_custom_transport(identity, quic_transport)
                 .keep_alive_interval(Some(Duration::from_secs(3)))
                 .build();
 
@@ -155,7 +179,10 @@ impl WebTransportTransport {
             info!(
                 transport_id = %self.transport_id,
                 bind_addr = %bind_addr,
-                mtu = self.config.mtu(),
+                config_mtu = self.config.mtu(),
+                initial_mtu = DEFAULT_INITIAL_MTU,
+                min_mtu = DEFAULT_MIN_MTU,
+                pmtu_discovery = "enabled",
                 "WebTransport server started"
             );
 
@@ -289,10 +316,18 @@ impl WebTransportTransport {
             // Build a client config that skips TLS cert validation.
             // FIPS handles authentication via Noise IK — TLS is just
             // mandatory ceremony for QUIC/HTTP3 compliance.
-            let client_config = wtransport::ClientConfig::builder()
+            let mut client_config = wtransport::ClientConfig::builder()
                 .with_bind_default()
                 .with_no_cert_validation()
                 .build();
+
+            // Override the QUIC transport config with our PMTU-aware settings.
+            // (with_no_cert_validation and with_custom_transport are mutually
+            // exclusive builder states, so we mutate after build instead.)
+            let quic_transport = build_quic_transport_config();
+            client_config
+                .quic_config_mut()
+                .transport_config(Arc::new(quic_transport));
 
             let client = Endpoint::client(client_config).map_err(|e| {
                 TransportError::StartFailed(format!("client endpoint creation failed: {e}"))
@@ -381,6 +416,19 @@ impl WebTransportTransport {
 
         match result {
             Ok(Ok((connection, remote_addr))) => {
+                // Query the QUIC-negotiated datagram capacity.
+                let max_datagram_size = connection.max_datagram_size();
+                let fmp_payload = max_datagram_size.map(|s| s.saturating_sub(FMP_OVERHEAD));
+
+                info!(
+                    transport_id = %self.transport_id,
+                    remote_addr = %remote_addr,
+                    max_datagram_size = ?max_datagram_size,
+                    fmp_max_payload = ?fmp_payload,
+                    ipv6_fits = fmp_payload.map_or(false, |p| p >= 1280),
+                    "WebTransport client session established"
+                );
+
                 // Spawn datagram receive loop and promote to sessions
                 let recv_task = spawn_datagram_rx(
                     connection.clone(),
@@ -398,6 +446,7 @@ impl WebTransportTransport {
                         SessionEntry {
                             connection,
                             recv_task,
+                            max_datagram_size,
                         },
                     );
                 }
@@ -442,6 +491,24 @@ impl Transport for WebTransportTransport {
     }
 
     fn mtu(&self) -> u16 {
+        self.config.mtu()
+    }
+
+    fn link_mtu(&self, addr: &TransportAddr) -> u16 {
+        // Try to get the actual QUIC datagram capacity for this session.
+        // Falls back to the config MTU if the session isn't found or locked.
+        if let Ok(sessions) = self.sessions.try_lock() {
+            if let Some(entry) = sessions.get(addr) {
+                // Prefer the live value from the connection (tracks PMTU changes).
+                if let Some(live_size) = entry.connection.max_datagram_size() {
+                    return live_size.min(u16::MAX as usize) as u16;
+                }
+                // Fall back to the value captured at session establishment.
+                if let Some(stored_size) = entry.max_datagram_size {
+                    return stored_size.min(u16::MAX as usize) as u16;
+                }
+            }
+        }
         self.config.mtu()
     }
 
@@ -533,9 +600,16 @@ async fn handle_incoming_session(
     // outbound sends can be routed back to the right QUIC connection.
     let remote_addr = TransportAddr::from_string(&format!("wt-session-{}", connection.session_id()));
 
+    // Query the QUIC-negotiated datagram capacity.
+    let max_datagram_size = connection.max_datagram_size();
+    let fmp_payload = max_datagram_size.map(|s| s.saturating_sub(FMP_OVERHEAD));
+
     info!(
         transport_id = %transport_id,
         remote_addr = %remote_addr,
+        max_datagram_size = ?max_datagram_size,
+        fmp_max_payload = ?fmp_payload,
+        ipv6_fits = fmp_payload.map_or(false, |p| p >= 1280),
         "WebTransport session accepted"
     );
 
@@ -555,6 +629,7 @@ async fn handle_incoming_session(
         SessionEntry {
             connection,
             recv_task,
+            max_datagram_size,
         },
     );
 
@@ -611,6 +686,28 @@ fn spawn_datagram_rx(
             "WebTransport datagram receive loop ended"
         );
     })
+}
+
+// ============================================================================
+// QUIC transport configuration
+// ============================================================================
+
+/// Build a quinn TransportConfig with PMTU discovery and a higher initial MTU.
+///
+/// The default quinn initial_mtu of 1200 only gives ~1177 bytes of WebTransport
+/// datagram payload — not enough for a full IPv6 minimum-MTU packet (1280 bytes)
+/// wrapped in FMP framing (37 bytes overhead = 1317 total).
+///
+/// By starting at 1452 (standard Ethernet minus IPv6+UDP headers), we get
+/// ~1429 bytes of payload from the very first packet. PMTU discovery still
+/// runs and will back off if the path can't support it.
+fn build_quic_transport_config() -> QuicTransportConfig {
+    let mut config = QuicTransportConfig::default();
+    config.initial_mtu(DEFAULT_INITIAL_MTU);
+    config.min_mtu(DEFAULT_MIN_MTU);
+    // PMTU discovery is enabled by default in quinn; ensure it stays on.
+    config.mtu_discovery_config(Some(Default::default()));
+    config
 }
 
 // ============================================================================

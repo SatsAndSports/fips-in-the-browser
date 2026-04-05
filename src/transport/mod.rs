@@ -16,6 +16,9 @@ pub mod ble;
 #[cfg(feature = "webtransport")]
 pub mod webtransport;
 
+#[cfg(feature = "websocket")]
+pub mod websocket;
+
 use secp256k1::XOnlyPublicKey;
 use udp::UdpTransport;
 use tcp::TcpTransport;
@@ -27,6 +30,8 @@ use ethernet::EthernetTransport;
 use ble::DefaultBleTransport;
 #[cfg(feature = "webtransport")]
 use webtransport::WebTransportTransport;
+#[cfg(feature = "websocket")]
+use websocket::WebSocketTransport;
 use std::fmt;
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -256,6 +261,13 @@ impl TransportType {
         name: "webtransport",
         connection_oriented: true,  // QUIC session establishment
         reliable: false,            // datagrams are unreliable
+    };
+
+    /// WebSocket transport.
+    pub const WEBSOCKET: TransportType = TransportType {
+        name: "websocket",
+        connection_oriented: true,
+        reliable: true,             // TCP underneath
     };
 
     /// Check if the transport is connectionless.
@@ -876,6 +888,9 @@ pub enum TransportHandle {
     /// WebTransport (QUIC datagram) transport.
     #[cfg(feature = "webtransport")]
     WebTransport(WebTransportTransport),
+    /// WebSocket transport.
+    #[cfg(feature = "websocket")]
+    WebSocket(WebSocketTransport),
 }
 
 impl TransportHandle {
@@ -891,6 +906,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.start_async().await,
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.start_async().await,
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.start_async().await,
         }
     }
 
@@ -906,6 +923,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.stop_async().await,
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.stop_async().await,
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.stop_async().await,
         }
     }
 
@@ -921,6 +940,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.send_async(addr, data).await,
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.send_async(addr, data).await,
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.send_async(addr, data).await,
         }
     }
 
@@ -936,6 +957,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.transport_id(),
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.transport_id(),
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.transport_id(),
         }
     }
 
@@ -951,6 +974,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.name(),
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.name(),
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.name(),
         }
     }
 
@@ -966,6 +991,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.transport_type(),
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.transport_type(),
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.transport_type(),
         }
     }
 
@@ -981,6 +1008,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.state(),
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.state(),
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.state(),
         }
     }
 
@@ -996,6 +1025,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.mtu(),
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.mtu(),
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.mtu(),
         }
     }
 
@@ -1014,6 +1045,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.link_mtu(addr),
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.link_mtu(addr),
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.link_mtu(addr),
         }
     }
 
@@ -1029,6 +1062,8 @@ impl TransportHandle {
             TransportHandle::Ble(_) => None,
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(_) => None,
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(_) => None,
         }
     }
 
@@ -1044,6 +1079,8 @@ impl TransportHandle {
             TransportHandle::Ble(_) => None,
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(_) => None,
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(_) => None,
         }
     }
 
@@ -1083,6 +1120,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.discover(),
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.discover(),
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.discover(),
         }
     }
 
@@ -1098,6 +1137,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.auto_connect(),
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.auto_connect(),
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.auto_connect(),
         }
     }
 
@@ -1113,6 +1154,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.accept_connections(),
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.accept_connections(),
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.accept_connections(),
         }
     }
 
@@ -1134,6 +1177,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.connect_async(addr).await,
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.connect_async(addr).await,
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.connect_async(addr).await,
         }
     }
 
@@ -1153,6 +1198,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.connection_state_sync(addr),
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.connection_state_sync(addr),
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.connection_state_sync(addr),
         }
     }
 
@@ -1171,6 +1218,8 @@ impl TransportHandle {
             TransportHandle::Ble(t) => t.close_connection_async(addr).await,
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => t.close_connection_async(addr).await,
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => t.close_connection_async(addr).await,
         }
     }
 
@@ -1195,6 +1244,8 @@ impl TransportHandle {
             TransportHandle::Ble(_) => TransportCongestion::default(),
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(_) => TransportCongestion::default(),
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(_) => TransportCongestion::default(),
         }
     }
 
@@ -1234,6 +1285,10 @@ impl TransportHandle {
             }
             #[cfg(feature = "webtransport")]
             TransportHandle::WebTransport(t) => {
+                serde_json::to_value(t.stats().snapshot()).unwrap_or_default()
+            }
+            #[cfg(feature = "websocket")]
+            TransportHandle::WebSocket(t) => {
                 serde_json::to_value(t.stats().snapshot()).unwrap_or_default()
             }
         }

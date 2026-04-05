@@ -13,6 +13,7 @@ default = ["tui", "ble"]
 tui = ["dep:ratatui"]
 ble = ["dep:bluer"]
 webtransport = ["dep:wtransport"]
+websocket = ["dep:tokio-tungstenite"]
 
 [dependencies]
 ratatui = { version = "0.30", optional = true }
@@ -41,6 +42,7 @@ socket2 = { version = "0.6.2", features = ["all"] }
 tokio-socks = "0.5"
 bluer = { version = "0.17", features = ["bluetoothd", "l2cap"], optional = true }
 wtransport = { version = "0.7", features = ["dangerous-configuration", "quinn"], optional = true }
+tokio-tungstenite = { version = "0.26", optional = true }
 
 [package.metadata.deb]
 maintainer = "Johnathan Corgan <jcorgan@corganlabs.com>"

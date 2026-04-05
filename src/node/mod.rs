@@ -37,6 +37,8 @@ use crate::transport::tor::TorTransport;
 use crate::transport::ethernet::EthernetTransport;
 #[cfg(feature = "webtransport")]
 use crate::transport::webtransport::WebTransportTransport;
+#[cfg(feature = "websocket")]
+use crate::transport::websocket::WebSocketTransport;
 use crate::tree::TreeState;
 use crate::upper::hosts::HostMap;
 use crate::upper::icmp_rate_limit::IcmpRateLimiter;
@@ -808,6 +810,29 @@ impl Node {
         #[cfg(not(feature = "webtransport"))]
         if !self.config.transports.webtransport.is_empty() {
             tracing::warn!("WebTransport configured but 'webtransport' feature not enabled at compile time");
+        }
+
+        // Create WebSocket transport instances
+        #[cfg(feature = "websocket")]
+        {
+            let ws_instances: Vec<_> = self
+                .config
+                .transports
+                .websocket
+                .iter()
+                .map(|(name, config)| (name.map(|s| s.to_string()), config.clone()))
+                .collect();
+
+            for (name, ws_config) in ws_instances {
+                let transport_id = self.allocate_transport_id();
+                let ws = WebSocketTransport::new(transport_id, name, ws_config, packet_tx.clone());
+                transports.push(TransportHandle::WebSocket(ws));
+            }
+        }
+
+        #[cfg(not(feature = "websocket"))]
+        if !self.config.transports.websocket.is_empty() {
+            tracing::warn!("WebSocket configured but 'websocket' feature not enabled at compile time");
         }
 
         transports

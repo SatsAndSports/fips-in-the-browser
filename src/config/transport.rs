@@ -710,6 +710,43 @@ impl WebTransportConfig {
 }
 
 // ============================================================================
+// WebSocket Configuration
+// ============================================================================
+
+/// WebSocket transport instance configuration.
+///
+/// When `bind_addr` is set, the transport runs a WebSocket server (accepts
+/// incoming HTTP Upgrade connections). When absent, the transport operates
+/// in client-only mode (outbound connections via `connect_async()` only).
+///
+/// No TLS — `ws://` not `wss://`. FIPS handles authentication and
+/// encryption at the Noise layer; WebSocket is just the byte pipe.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebSocketConfig {
+    /// Server bind address (`host:port`). When set, the transport listens
+    /// for incoming WebSocket connections. When absent, client-only mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind_addr: Option<String>,
+
+    /// Whether to accept incoming WebSocket connections. Default: true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accept_connections: Option<bool>,
+}
+
+impl WebSocketConfig {
+    /// Get the bind address. `None` means client-only (no server listener).
+    pub fn bind_addr(&self) -> Option<&str> {
+        self.bind_addr.as_deref()
+    }
+
+    /// Whether to accept incoming connections. Default: true.
+    pub fn accept_connections(&self) -> bool {
+        self.accept_connections.unwrap_or(true)
+    }
+}
+
+// ============================================================================
 // TransportsConfig
 // ============================================================================
 
@@ -742,6 +779,10 @@ pub struct TransportsConfig {
     /// WebTransport instances.
     #[serde(default, skip_serializing_if = "is_transport_empty")]
     pub webtransport: TransportInstances<WebTransportConfig>,
+
+    /// WebSocket instances.
+    #[serde(default, skip_serializing_if = "is_transport_empty")]
+    pub websocket: TransportInstances<WebSocketConfig>,
 }
 
 /// Helper for skip_serializing_if on TransportInstances.
@@ -758,6 +799,7 @@ impl TransportsConfig {
             && self.tor.is_empty()
             && self.ble.is_empty()
             && self.webtransport.is_empty()
+            && self.websocket.is_empty()
     }
 
     /// Merge another TransportsConfig into this one.
@@ -781,6 +823,9 @@ impl TransportsConfig {
         }
         if !other.webtransport.is_empty() {
             self.webtransport = other.webtransport;
+        }
+        if !other.websocket.is_empty() {
+            self.websocket = other.websocket;
         }
     }
 }

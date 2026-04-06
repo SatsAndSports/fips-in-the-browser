@@ -35,8 +35,6 @@ use crate::transport::tcp::TcpTransport;
 use crate::transport::tor::TorTransport;
 #[cfg(target_os = "linux")]
 use crate::transport::ethernet::EthernetTransport;
-#[cfg(feature = "webtransport")]
-use crate::transport::webtransport::WebTransportTransport;
 #[cfg(feature = "websocket")]
 use crate::transport::websocket::WebSocketTransport;
 use crate::tree::TreeState;
@@ -787,29 +785,6 @@ impl Node {
                 #[cfg(not(test))]
                 tracing::warn!("BLE transport configured but 'ble' feature not enabled at compile time");
             }
-        }
-
-        // Create WebTransport transport instances
-        #[cfg(feature = "webtransport")]
-        {
-            let wt_instances: Vec<_> = self
-                .config
-                .transports
-                .webtransport
-                .iter()
-                .map(|(name, config)| (name.map(|s| s.to_string()), config.clone()))
-                .collect();
-
-            for (name, wt_config) in wt_instances {
-                let transport_id = self.allocate_transport_id();
-                let wt = WebTransportTransport::new(transport_id, name, wt_config, packet_tx.clone());
-                transports.push(TransportHandle::WebTransport(wt));
-            }
-        }
-
-        #[cfg(not(feature = "webtransport"))]
-        if !self.config.transports.webtransport.is_empty() {
-            tracing::warn!("WebTransport configured but 'webtransport' feature not enabled at compile time");
         }
 
         // Create WebSocket transport instances

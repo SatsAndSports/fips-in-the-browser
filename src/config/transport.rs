@@ -633,83 +633,6 @@ impl BleConfig {
 }
 
 // ============================================================================
-// WebTransport Configuration
-// ============================================================================
-
-/// Default WebTransport datagram MTU.
-///
-/// QUIC datagrams are bounded by path MTU. Conservative default that fits
-/// in a single QUIC packet on most networks.
-const DEFAULT_WEBTRANSPORT_MTU: u16 = 1200;
-
-/// WebTransport transport instance configuration.
-///
-/// When `bind_addr` is set the transport runs in server mode (listens for
-/// incoming WebTransport sessions). Peers that reference this transport by
-/// type `"webtransport"` connect as clients.
-///
-/// TLS is mandatory for QUIC/HTTP3. The transport loads a persistent
-/// certificate and private key from `cert_file` / `key_file`. If the files
-/// do not exist on first startup, a self-signed certificate is generated
-/// and saved automatically.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WebTransportConfig {
-    /// Server bind address (`host:port`). When set, the transport also
-    /// listens for incoming WebTransport sessions. When absent, the
-    /// transport operates in client-only mode (outbound connections only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bind_addr: Option<String>,
-
-    /// Path to the TLS certificate PEM file.
-    /// If absent (and `key_file` is also absent), a self-signed certificate
-    /// is generated and persisted to `/etc/fips/wt-cert.pem`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cert_file: Option<String>,
-
-    /// Path to the TLS private key PEM file.
-    /// If absent (and `cert_file` is also absent), a private key is
-    /// generated and persisted to `/etc/fips/wt-key.pem`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key_file: Option<String>,
-
-    /// Datagram MTU. Defaults to 1200.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mtu: Option<u16>,
-
-    /// Whether to accept incoming WebTransport sessions. Default: true.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accept_connections: Option<bool>,
-}
-
-impl WebTransportConfig {
-    /// Get the bind address. `None` means client-only (no server listener).
-    pub fn bind_addr(&self) -> Option<&str> {
-        self.bind_addr.as_deref()
-    }
-
-    /// Get the cert file path. Default: "/etc/fips/wt-cert.pem".
-    pub fn cert_file(&self) -> &str {
-        self.cert_file.as_deref().unwrap_or("/etc/fips/wt-cert.pem")
-    }
-
-    /// Get the key file path. Default: "/etc/fips/wt-key.pem".
-    pub fn key_file(&self) -> &str {
-        self.key_file.as_deref().unwrap_or("/etc/fips/wt-key.pem")
-    }
-
-    /// Get the datagram MTU. Default: 1200.
-    pub fn mtu(&self) -> u16 {
-        self.mtu.unwrap_or(DEFAULT_WEBTRANSPORT_MTU)
-    }
-
-    /// Whether to accept incoming connections. Default: true.
-    pub fn accept_connections(&self) -> bool {
-        self.accept_connections.unwrap_or(true)
-    }
-}
-
-// ============================================================================
 // WebSocket Configuration
 // ============================================================================
 
@@ -776,10 +699,6 @@ pub struct TransportsConfig {
     #[serde(default, skip_serializing_if = "is_transport_empty")]
     pub ble: TransportInstances<BleConfig>,
 
-    /// WebTransport instances.
-    #[serde(default, skip_serializing_if = "is_transport_empty")]
-    pub webtransport: TransportInstances<WebTransportConfig>,
-
     /// WebSocket instances.
     #[serde(default, skip_serializing_if = "is_transport_empty")]
     pub websocket: TransportInstances<WebSocketConfig>,
@@ -798,7 +717,6 @@ impl TransportsConfig {
             && self.tcp.is_empty()
             && self.tor.is_empty()
             && self.ble.is_empty()
-            && self.webtransport.is_empty()
             && self.websocket.is_empty()
     }
 
@@ -820,9 +738,6 @@ impl TransportsConfig {
         }
         if !other.ble.is_empty() {
             self.ble = other.ble;
-        }
-        if !other.webtransport.is_empty() {
-            self.webtransport = other.webtransport;
         }
         if !other.websocket.is_empty() {
             self.websocket = other.websocket;

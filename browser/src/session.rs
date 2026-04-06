@@ -1,0 +1,440 @@
+//! Session manager — Noise XK sessions with FSP encryption.
+//!
+//! Manages end-to-end encrypted sessions between this browser node and
+//! remote FIPS nodes. Each session goes through a 3-message Noise XK
+//! handshake (routed via SessionDatagram through the mesh), then uses
+//! ChaCha20-Poly1305 for data encryption.
+
+use crate::cipher::CipherState;
+use crate::identity;
+use crate::noise_xk::HandshakeXK;
+use crate::replay::ReplayWindow;
+use crate::wire;
+use std::collections::HashMap;
+
+/// Default TTL for SessionDatagrams.
+const DEFAULT_TTL: u8 = 64;
+
+/// Default path MTU for SessionDatagrams.
+const DEFAULT_PATH_MTU: u16 = u16::MAX;
+
+/// A session in one of its lifecycle states.
+enum SessionState {
+    /// Initiator: sent msg1, waiting for msg2 (SessionAck).
+    Initiating(HandshakeXK),
+    /// Responder: sent msg2, waiting for msg3 (SessionMsg3).
+    AwaitingMsg3(HandshakeXK),
+    /// Handshake complete, data can flow.
+    Established {
+        send_cipher: CipherState,
+        recv_cipher: CipherState,
+        replay: ReplayWindow,
+    },
+}
+
+/// Manages all active sessions, keyed by remote NodeAddr.
+pub struct SessionManager {
+    sessions: HashMap<[u8; 16], SessionState>,
+    /// Our own coordinates (root, depth 0 — just our own NodeAddr).
+    our_coords: Vec<[u8; 16]>,
+    /// Our NodeAddr.
+    our_addr: [u8; 16],
+}
+
+/// Result of processing an incoming SessionDatagram.
+pub struct SessionEvent {
+    /// FMP wire packets to send back (already link-encrypted by the caller).
+    pub fsp_responses: Vec<Vec<u8>>,
+    /// Human-readable description for the UI.
+    pub info: String,
+    /// The peer's npub when a session becomes established.
+    pub remote_npub: Option<String>,
+    /// Decrypted application payload (if any).
+    pub payload: Option<(u16, Vec<u8>)>, // (dst_port, data)
+    /// The source NodeAddr (who sent this).
+    pub from: [u8; 16],
+}
+
+impl SessionManager {
+    pub fn new(our_addr: [u8; 16]) -> Self {
+        Self {
+            sessions: HashMap::new(),
+            our_coords: vec![our_addr],
+            our_addr,
+        }
+    }
+
+    /// Check if a session with the given dest is established.
+    pub fn is_established(&self, dest: &[u8; 16]) -> bool {
+        matches!(
+            self.sessions.get(dest),
+            Some(SessionState::Established { .. })
+        )
+    }
+
+    // ========================================================================
+    // Initiate a session (we are the initiator)
+    // ========================================================================
+
+    /// Initiate a Noise XK session with a remote node.
+    ///
+    /// Returns the FSP SessionSetup payload (to be wrapped in a SessionDatagram
+    /// by the caller, then link-encrypted and sent).
+    pub fn initiate(
+        &mut self,
+        dest_addr: [u8; 16],
+        dest_pubkey: &k256::PublicKey,
+        local_epoch: [u8; 8],
+        our_secret: &k256::SecretKey,
+    ) -> Result<Vec<u8>, String> {
+        if let Some(state) = self.sessions.get(&dest_addr) {
+            return Err(match state {
+                SessionState::Established { .. } => {
+                    "session already established for this destination".into()
+                }
+                SessionState::Initiating(_) | SessionState::AwaitingMsg3(_) => {
+                    "session handshake already in progress for this destination".into()
+                }
+            });
+        }
+
+        let mut hs = HandshakeXK::new_initiator(our_secret.clone(), *dest_pubkey, local_epoch);
+        let msg1 = hs.write_msg1()?;
+
+        // Build SessionSetup (FSP phase 0x1) with coordinates
+        let dest_coords: &[[u8; 16]] = &[dest_addr]; // placeholder
+        let setup = wire::build_session_setup(&self.our_coords, dest_coords, &msg1);
+
+        self.sessions
+            .insert(dest_addr, SessionState::Initiating(hs));
+
+        Ok(setup)
+    }
+
+    // ========================================================================
+    // Process incoming FSP payload (from a SessionDatagram addressed to us)
+    // ========================================================================
+
+    /// Process an incoming FSP payload from a SessionDatagram.
+    ///
+    /// `src_addr` is the source NodeAddr from the SessionDatagram envelope.
+    /// `fsp_payload` is the raw FSP bytes (starting with the 4-byte FSP prefix).
+    ///
+    /// Returns a SessionEvent with any response FSP payloads and decoded data.
+    pub fn process_incoming(
+        &mut self,
+        src_addr: [u8; 16],
+        fsp_payload: &[u8],
+        local_epoch: [u8; 8],
+        our_secret: &k256::SecretKey,
+    ) -> Result<SessionEvent, String> {
+        if fsp_payload.len() < 4 {
+            return Err("FSP payload too short".into());
+        }
+
+        let phase = fsp_payload[0] & 0x0F;
+        let body = &fsp_payload[4..]; // skip 4-byte FSP prefix
+
+        match phase {
+            wire::FSP_PHASE_SETUP => self.handle_setup(src_addr, body, local_epoch, our_secret),
+            wire::FSP_PHASE_ACK => self.handle_ack(src_addr, body),
+            wire::FSP_PHASE_MSG3 => self.handle_msg3(src_addr, body),
+            wire::FSP_PHASE_ESTABLISHED => self.handle_established_data(src_addr, fsp_payload),
+            other => Err(format!("unknown FSP phase: {other:#x}")),
+        }
+    }
+
+    // ========================================================================
+    // Handshake handlers
+    // ========================================================================
+
+    /// Handle incoming SessionSetup (we are the responder).
+    fn handle_setup(
+        &mut self,
+        src_addr: [u8; 16],
+        body: &[u8],
+        local_epoch: [u8; 8],
+        our_secret: &k256::SecretKey,
+    ) -> Result<SessionEvent, String> {
+        let (_src_coords, _dest_coords, hs_payload) =
+            wire::parse_session_setup_body(body).ok_or("invalid SessionSetup body")?;
+
+        // Create responder handshake state
+        let mut hs = HandshakeXK::new_responder(our_secret.clone(), local_epoch);
+        hs.read_msg1(&hs_payload)?;
+        let msg2 = hs.write_msg2()?;
+
+        // Build SessionAck (FSP phase 0x2)
+        let src_coords_for_ack = &self.our_coords;
+        let dest_coords_for_ack: &[[u8; 16]] = &[src_addr]; // initiator's addr
+        let ack = wire::build_session_ack(src_coords_for_ack, dest_coords_for_ack, &msg2);
+
+        // Store as AwaitingMsg3
+        self.sessions
+            .insert(src_addr, SessionState::AwaitingMsg3(hs));
+
+        Ok(SessionEvent {
+            fsp_responses: vec![ack],
+            info: format!("SessionSetup received, sent SessionAck (XK msg2)"),
+            remote_npub: None,
+            payload: None,
+            from: src_addr,
+        })
+    }
+
+    /// Handle incoming SessionAck (we are the initiator, receiving msg2).
+    fn handle_ack(&mut self, src_addr: [u8; 16], body: &[u8]) -> Result<SessionEvent, String> {
+        let (_src_coords, _dest_coords, hs_payload) =
+            wire::parse_session_ack_body(body).ok_or("invalid SessionAck body")?;
+
+        let state = self
+            .sessions
+            .remove(&src_addr)
+            .ok_or("no session for this source (unexpected SessionAck)")?;
+
+        match state {
+            SessionState::Initiating(mut hs) => {
+                hs.read_msg2(&hs_payload)?;
+                let msg3 = hs.write_msg3()?;
+
+                // Build SessionMsg3 (FSP phase 0x3)
+                let msg3_fsp = wire::build_session_msg3(&msg3);
+
+                // Complete handshake → established
+                let (send_cipher, recv_cipher, remote_pub) = hs.into_transport()?;
+                let remote_npub = identity::pubkey_to_npub(&remote_pub);
+
+                self.sessions.insert(
+                    src_addr,
+                    SessionState::Established {
+                        send_cipher,
+                        recv_cipher,
+                        replay: ReplayWindow::new(),
+                    },
+                );
+
+                Ok(SessionEvent {
+                    fsp_responses: vec![msg3_fsp],
+                    info: format!("SessionAck received, sent msg3. Session ESTABLISHED!"),
+                    remote_npub: Some(remote_npub),
+                    payload: None,
+                    from: src_addr,
+                })
+            }
+            other => {
+                self.sessions.insert(src_addr, other);
+                Err("received SessionAck but not in Initiating state".into())
+            }
+        }
+    }
+
+    /// Handle incoming SessionMsg3 (we are the responder, receiving msg3).
+    fn handle_msg3(&mut self, src_addr: [u8; 16], body: &[u8]) -> Result<SessionEvent, String> {
+        let hs_payload = wire::parse_session_msg3_body(body).ok_or("invalid SessionMsg3 body")?;
+
+        let state = self
+            .sessions
+            .remove(&src_addr)
+            .ok_or("no session for this source (unexpected SessionMsg3)")?;
+
+        match state {
+            SessionState::AwaitingMsg3(mut hs) => {
+                hs.read_msg3(&hs_payload)?;
+                let (send_cipher, recv_cipher, remote_pub) = hs.into_transport()?;
+                let remote_npub = identity::pubkey_to_npub(&remote_pub);
+
+                self.sessions.insert(
+                    src_addr,
+                    SessionState::Established {
+                        send_cipher,
+                        recv_cipher,
+                        replay: ReplayWindow::new(),
+                    },
+                );
+
+                Ok(SessionEvent {
+                    fsp_responses: vec![],
+                    info: format!("SessionMsg3 received. Session ESTABLISHED!"),
+                    remote_npub: Some(remote_npub),
+                    payload: None,
+                    from: src_addr,
+                })
+            }
+            other => {
+                self.sessions.insert(src_addr, other);
+                Err("received SessionMsg3 but not in AwaitingMsg3 state".into())
+            }
+        }
+    }
+
+    // ========================================================================
+    // Established session data
+    // ========================================================================
+
+    /// Handle incoming encrypted session data (FSP phase 0x0).
+    fn handle_established_data(
+        &mut self,
+        src_addr: [u8; 16],
+        fsp_payload: &[u8],
+    ) -> Result<SessionEvent, String> {
+        let (flags, _payload_len, counter, header_bytes) =
+            wire::parse_fsp_header(fsp_payload).ok_or("invalid FSP header")?;
+
+        // Skip coords if CP flag is set
+        let mut data_offset = wire::FSP_HEADER_SIZE;
+        if flags & 0x01 != 0 {
+            // CP flag: skip cleartext coords
+            let (_coords, new_pos) =
+                wire::parse_coords(fsp_payload, data_offset).ok_or("invalid src coords in CP")?;
+            data_offset = new_pos;
+            let (_coords, new_pos) =
+                wire::parse_coords(fsp_payload, data_offset).ok_or("invalid dest coords in CP")?;
+            data_offset = new_pos;
+        }
+
+        let ciphertext = &fsp_payload[data_offset..];
+
+        let state = self
+            .sessions
+            .get_mut(&src_addr)
+            .ok_or("no established session for this source")?;
+
+        match state {
+            SessionState::Established {
+                recv_cipher,
+                replay,
+                ..
+            } => {
+                if !replay.check(counter) {
+                    return Ok(SessionEvent {
+                        fsp_responses: vec![],
+                        info: format!("Session replay detected: counter {counter}"),
+                        remote_npub: None,
+                        payload: None,
+                        from: src_addr,
+                    });
+                }
+
+                let plaintext = recv_cipher
+                    .decrypt_with_counter_and_aad(ciphertext, counter, &header_bytes)
+                    .map_err(|e| format!("session decrypt failed: {e}"))?;
+
+                replay.accept(counter);
+
+                // Parse FSP inner header: [timestamp:4][msg_type:1][inner_flags:1]
+                if plaintext.len() < wire::FSP_INNER_HEADER_SIZE {
+                    return Err("FSP inner header too short".into());
+                }
+                let msg_type = plaintext[4];
+
+                if msg_type == wire::FSP_MSG_TYPE_DATA {
+                    // DataPacket: [inner_header:6][src_port:2][dst_port:2][payload...]
+                    if plaintext.len() < wire::FSP_INNER_HEADER_SIZE + 4 {
+                        return Err("DataPacket too short for port header".into());
+                    }
+                    let src_port = u16::from_le_bytes([
+                        plaintext[wire::FSP_INNER_HEADER_SIZE],
+                        plaintext[wire::FSP_INNER_HEADER_SIZE + 1],
+                    ]);
+                    let dst_port = u16::from_le_bytes([
+                        plaintext[wire::FSP_INNER_HEADER_SIZE + 2],
+                        plaintext[wire::FSP_INNER_HEADER_SIZE + 3],
+                    ]);
+                    let data = plaintext[wire::FSP_INNER_HEADER_SIZE + 4..].to_vec();
+
+                    Ok(SessionEvent {
+                        fsp_responses: vec![],
+                        info: format!(
+                            "Session data: src_port={src_port} dst_port={dst_port} {} bytes",
+                            data.len()
+                        ),
+                        remote_npub: None,
+                        payload: Some((dst_port, data)),
+                        from: src_addr,
+                    })
+                } else {
+                    // Other FSP message types (MMP, coords warmup, etc.) — log
+                    Ok(SessionEvent {
+                        fsp_responses: vec![],
+                        info: format!(
+                            "Session msg_type {msg_type:#04x} ({} bytes)",
+                            plaintext.len()
+                        ),
+                        remote_npub: None,
+                        payload: None,
+                        from: src_addr,
+                    })
+                }
+            }
+            _ => Err("session not in Established state for data".into()),
+        }
+    }
+
+    // ========================================================================
+    // Send data through an established session
+    // ========================================================================
+
+    /// Encrypt and build an FSP data payload for an established session.
+    ///
+    /// Returns the FSP wire bytes (header + ciphertext) to be wrapped in a
+    /// SessionDatagram by the caller.
+    pub fn send_data(
+        &mut self,
+        dest_addr: &[u8; 16],
+        src_port: u16,
+        dst_port: u16,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let state = self
+            .sessions
+            .get_mut(dest_addr)
+            .ok_or("no established session for this destination")?;
+
+        match state {
+            SessionState::Established { send_cipher, .. } => {
+                let timestamp = wire::current_timestamp_ms();
+                let inner_header = wire::build_fsp_inner(timestamp, wire::FSP_MSG_TYPE_DATA, 0);
+
+                // Build inner plaintext: [fsp_inner:6][src_port:2][dst_port:2][payload]
+                let mut inner = Vec::with_capacity(wire::FSP_INNER_HEADER_SIZE + 4 + payload.len());
+                inner.extend_from_slice(&inner_header);
+                inner.extend_from_slice(&src_port.to_le_bytes());
+                inner.extend_from_slice(&dst_port.to_le_bytes());
+                inner.extend_from_slice(payload);
+
+                // Build FSP header (12 bytes, used as AEAD AAD)
+                let counter = send_cipher.nonce();
+                let payload_len = inner.len() as u16;
+                let header = wire::build_fsp_header(0, payload_len, counter);
+
+                // Encrypt
+                let ciphertext = send_cipher.encrypt_with_aad(&inner, &header)?;
+
+                // Assemble: header(12) + ciphertext+tag
+                let mut out = Vec::with_capacity(wire::FSP_HEADER_SIZE + ciphertext.len());
+                out.extend_from_slice(&header);
+                out.extend_from_slice(&ciphertext);
+                Ok(out)
+            }
+            _ => Err("session not established".into()),
+        }
+    }
+
+    /// Wrap an FSP payload in a SessionDatagram (link-layer msg_type 0x00 envelope).
+    ///
+    /// Returns the full link-layer inner payload (msg_type byte + datagram body).
+    pub fn wrap_in_datagram(&self, dest_addr: &[u8; 16], fsp_payload: &[u8]) -> Vec<u8> {
+        let body = wire::build_session_datagram_body(
+            DEFAULT_TTL,
+            DEFAULT_PATH_MTU,
+            &self.our_addr,
+            dest_addr,
+            fsp_payload,
+        );
+        // Prepend msg_type 0x00 (SessionDatagram)
+        let mut out = Vec::with_capacity(1 + body.len());
+        out.push(wire::MSG_TYPE_SESSION_DATAGRAM);
+        out.extend_from_slice(&body);
+        out
+    }
+}

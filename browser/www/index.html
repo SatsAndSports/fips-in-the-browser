@@ -15,6 +15,7 @@
     --green: #4ade80;
     --red: #f87171;
     --blue: #60a5fa;
+    --purple: #c084fc;
     --mono: "Fira Code", "Cascadia Code", "JetBrains Mono", monospace;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -80,12 +81,13 @@
   button:hover { opacity: 0.85; }
   button:disabled { opacity: 0.4; cursor: default; }
   .btn-connect { background: var(--highlight); color: #fff; }
+  .btn-session { background: var(--purple); color: #fff; }
   .btn-send { background: var(--green); color: #111; }
   .status { font-size: 0.78rem; margin-top: 0.5rem; }
   .status.connected { color: var(--green); }
   .status.disconnected { color: var(--red); }
   .status.connecting { color: #facc15; }
-  .status.handshaking { color: #c084fc; }
+  .status.handshaking { color: var(--purple); }
   #sendRow { display: flex; gap: 0.5rem; }
   #sendRow input { flex: 1; margin-bottom: 0; }
   #log {
@@ -104,13 +106,14 @@
   .log-recv { color: var(--blue); }
   .log-info { color: var(--muted); }
   .log-err  { color: var(--red); }
-  .log-hs   { color: #c084fc; }
+  .log-hs   { color: var(--purple); }
+  .log-chat { color: #fbbf24; }
 </style>
 </head>
 <body>
 
 <h1>FIPS Browser Node</h1>
-<p class="subtitle">real Noise IK handshake + encrypted FMP frames over WebSocket</p>
+<p class="subtitle">end-to-end encrypted sessions over WebSocket</p>
 
 <!-- Identity panel -->
 <div class="panel">
@@ -119,17 +122,37 @@
   <div class="info-row">addr: <span id="myAddr"></span></div>
 </div>
 
-<!-- Connection panel -->
+<!-- Link connection panel -->
 <div class="panel">
-  <div class="panel-title">Connect to FIPS Node</div>
+  <div class="panel-title">1. Connect to Gateway Node (Noise IK link)</div>
   <label for="url">WebSocket URL</label>
   <input type="text" id="url" value="ws://localhost:8080">
-  <label for="remoteNpub">Remote node npub</label>
+  <label for="remoteNpub">Gateway node npub</label>
   <input type="text" id="remoteNpub" placeholder="npub1...">
   <div>
-    <button class="btn-connect" id="btnConnect" disabled>Connect + Handshake</button>
+    <button class="btn-connect" id="btnConnect" disabled>Connect</button>
   </div>
   <div class="status disconnected" id="status">Loading WASM...</div>
+</div>
+
+<!-- Session panel -->
+<div class="panel">
+  <div class="panel-title">2. Start Session with Remote Node (Noise XK)</div>
+  <label for="sessionNpub">Remote node npub (paste from other browser)</label>
+  <input type="text" id="sessionNpub" placeholder="npub1..." disabled>
+  <div>
+    <button class="btn-session" id="btnSession" disabled>Connect Session</button>
+  </div>
+  <div class="status disconnected" id="sessionStatus">No session</div>
+</div>
+
+<!-- Chat panel -->
+<div class="panel">
+  <div class="panel-title">3. Chat (end-to-end encrypted)</div>
+  <div id="sendRow">
+    <input type="text" id="msg" placeholder="Type a message..." disabled>
+    <button class="btn-send" id="btnSend" disabled>Send</button>
+  </div>
 </div>
 
 <!-- Log panel -->
@@ -141,19 +164,22 @@
 <script type="module">
 import init, { FipsNode } from '../pkg/fips_wasm.js';
 
-// ── DOM refs ──────────────────────────────────────────
-const $myNpub      = document.getElementById('myNpub');
-const $myAddr      = document.getElementById('myAddr');
-const $url         = document.getElementById('url');
-const $remoteNpub  = document.getElementById('remoteNpub');
-const $btnConnect  = document.getElementById('btnConnect');
-const $status      = document.getElementById('status');
-const $log         = document.getElementById('log');
+const $myNpub        = document.getElementById('myNpub');
+const $myAddr        = document.getElementById('myAddr');
+const $url           = document.getElementById('url');
+const $remoteNpub    = document.getElementById('remoteNpub');
+const $btnConnect    = document.getElementById('btnConnect');
+const $status        = document.getElementById('status');
+const $sessionNpub   = document.getElementById('sessionNpub');
+const $btnSession    = document.getElementById('btnSession');
+const $sessionStatus = document.getElementById('sessionStatus');
+const $msg           = document.getElementById('msg');
+const $btnSend       = document.getElementById('btnSend');
+const $log           = document.getElementById('log');
 
 let node = null;
 let ws = null;
-
-// ── Helpers ───────────────────────────────────────────
+let sessionDest = null; // npub of the session peer
 
 function log(cls, text) {
   const span = document.createElement('span');
@@ -166,6 +192,11 @@ function log(cls, text) {
 function setStatus(text, cls) {
   $status.textContent = text;
   $status.className = 'status ' + cls;
+}
+
+function setSessionStatus(text, cls) {
+  $sessionStatus.textContent = text;
+  $sessionStatus.className = 'status ' + cls;
 }
 
 // ── Initialize WASM ───────────────────────────────────
@@ -181,16 +212,12 @@ log('log-info', `WASM loaded. Browser FIPS node initialized.`);
 log('log-info', `npub: ${node.npub()}`);
 log('log-info', `addr: ${node.node_addr_hex()}`);
 
-// ── Connect + Handshake ───────────────────────────────
+// ── 1. Link Connect ──────────────────────────────────
 
 $btnConnect.addEventListener('click', () => {
   const url = $url.value.trim();
   const remoteNpub = $remoteNpub.value.trim();
-
-  if (!url || !remoteNpub) {
-    log('log-err', 'URL and remote npub are required.');
-    return;
-  }
+  if (!url || !remoteNpub) { log('log-err', 'URL and gateway npub are required.'); return; }
 
   $btnConnect.disabled = true;
   setStatus('Connecting...', 'connecting');
@@ -201,14 +228,11 @@ $btnConnect.addEventListener('click', () => {
 
   ws.onopen = () => {
     log('log-info', 'WebSocket connected.');
-
-    // Initiate Noise IK handshake
     setStatus('Handshaking...', 'handshaking');
     log('log-hs', `Initiating Noise IK handshake with ${remoteNpub.slice(0,12)}...`);
-
     try {
       const msg1 = node.initiate_handshake(remoteNpub);
-      log('log-hs', `Sent msg1 (${msg1.length} bytes)`);
+      log('log-hs', `Sent IK msg1 (${msg1.length} bytes)`);
       ws.send(msg1);
     } catch (e) {
       log('log-err', `Handshake failed: ${e}`);
@@ -219,30 +243,46 @@ $btnConnect.addEventListener('click', () => {
 
   ws.onmessage = (event) => {
     const data = new Uint8Array(event.data);
-
     try {
       const result = node.process_incoming(data);
 
+      // Dispatch by msg_type
       if (result.msg_type === 'msg2') {
-        log('log-hs', `Received msg2 — ${result.info}`);
-        setStatus('Established', 'connected');
-      } else if (result.msg_type === 'tree_announce') {
-        log('log-info', `← ${result.info}`);
-      } else if (result.msg_type === 'filter_announce') {
-        log('log-info', `← ${result.info}`);
+        log('log-hs', `← ${result.info}`);
+        setStatus('Link Established', 'connected');
+        $sessionNpub.disabled = false;
+        $btnSession.disabled = false;
+      } else if (result.msg_type === 'session') {
+        log('log-hs', `← ${result.info}`);
+        if (result.session_peer_npub) {
+          sessionDest = result.session_peer_npub;
+          $sessionNpub.value = sessionDest;
+        }
+        if (sessionDest && node.is_session_established(sessionDest)) {
+          setSessionStatus('Session Established', 'connected');
+          $msg.disabled = false;
+          $btnSend.disabled = false;
+          $btnSession.disabled = true;
+        }
+      } else if (result.msg_type === 'session_chat') {
+        const text = result.payload
+          ? new TextDecoder().decode(new Uint8Array(result.payload))
+          : '';
+        log('log-chat', `← ${result.info}`);
       } else if (result.msg_type === 'sender_report') {
+        // Don't log every sender report — too noisy
+      } else if (result.msg_type === 'heartbeat' || result.msg_type === 'receiver_report') {
+        // Silent
+      } else if (result.msg_type === 'tree_announce' || result.msg_type === 'filter_announce') {
+        // Log briefly
         log('log-info', `← ${result.info}`);
-      } else if (result.msg_type === 'receiver_report') {
-        // Informational — peer sent us a receiver report
-      } else if (result.msg_type === 'session_datagram') {
-        log('log-recv', `← SessionDatagram (${result.payload ? result.payload.length : 0} bytes)`);
       } else if (result.msg_type === 'replay') {
         log('log-err', `Replay: ${result.info}`);
       } else {
-        log('log-info', `← [${result.msg_type}] ${result.info || ''}`);
+        if (result.info) log('log-info', `← [${result.msg_type}] ${result.info}`);
       }
 
-      // Send any response messages (TreeAnnounce, FilterAnnounce, ReceiverReport, etc.)
+      // Send any responses
       if (result.responses && result.responses.length > 0) {
         for (const resp of result.responses) {
           ws.send(new Uint8Array(resp));
@@ -257,16 +297,77 @@ $btnConnect.addEventListener('click', () => {
     log('log-info', 'WebSocket closed.');
     setStatus('Disconnected', 'disconnected');
     $btnConnect.disabled = false;
+    $sessionNpub.disabled = true;
+    $btnSession.disabled = true;
+    $msg.disabled = true;
+    $btnSend.disabled = true;
     ws = null;
   };
 
-  ws.onerror = (event) => {
-    log('log-err', `WebSocket error.`);
+  ws.onerror = () => {
+    log('log-err', 'WebSocket error.');
     setStatus('Disconnected', 'disconnected');
     $btnConnect.disabled = false;
   };
 });
 
+// ── 2. Session Connect ───────────────────────────────
+
+$btnSession.addEventListener('click', () => {
+  const destNpub = $sessionNpub.value.trim();
+  if (!destNpub) { log('log-err', 'Remote npub is required.'); return; }
+
+  if (node.is_session_established(destNpub)) {
+    sessionDest = destNpub;
+    setSessionStatus('Session Established', 'connected');
+    $msg.disabled = false;
+    $btnSend.disabled = false;
+    $btnSession.disabled = true;
+    log('log-info', 'Session already established. Ready to chat.');
+    return;
+  }
+
+  sessionDest = destNpub;
+  setSessionStatus('Initiating XK handshake...', 'handshaking');
+  log('log-hs', `Initiating Noise XK session with ${destNpub.slice(0,12)}...`);
+
+  try {
+    const pkt = node.connect_session(destNpub);
+    ws.send(pkt);
+    log('log-hs', `Sent SessionSetup (XK msg1, ${pkt.length} bytes on wire)`);
+    $btnSession.disabled = true;
+  } catch (e) {
+    if (String(e).includes('already established')) {
+      setSessionStatus('Session Established', 'connected');
+      $msg.disabled = false;
+      $btnSend.disabled = false;
+      $btnSession.disabled = true;
+      log('log-info', 'Session already established. Ready to chat.');
+    } else {
+      log('log-err', `Session initiation failed: ${e}`);
+      setSessionStatus('Failed', 'disconnected');
+    }
+  }
+});
+
+// ── 3. Chat Send ─────────────────────────────────────
+
+function sendChat() {
+  const text = $msg.value.trim();
+  if (!text || !ws || !sessionDest) return;
+
+  try {
+    const pkt = node.send_message(sessionDest, text);
+    ws.send(pkt);
+    log('log-send', `→ ${text}`);
+    $msg.value = '';
+  } catch (e) {
+    log('log-err', `Send error: ${e}`);
+  }
+}
+
+$btnSend.addEventListener('click', sendChat);
+$msg.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
 </script>
 </body>
 </html>

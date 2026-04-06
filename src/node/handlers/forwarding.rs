@@ -17,6 +17,26 @@ use crate::NodeAddr;
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
+fn session_datagram_phase(datagram: &SessionDatagram) -> &'static str {
+    let Some(prefix) = FspCommonPrefix::parse(&datagram.payload) else {
+        return "Unknown";
+    };
+
+    match prefix.phase {
+        FSP_PHASE_MSG1 => "SessionSetup",
+        FSP_PHASE_MSG2 => "SessionAck",
+        crate::node::session_wire::FSP_PHASE_MSG3 => "SessionMsg3",
+        FSP_PHASE_ESTABLISHED => {
+            if prefix.is_unencrypted() {
+                "EstablishedPlaintext"
+            } else {
+                "EstablishedData"
+            }
+        }
+        _ => "Unknown",
+    }
+}
+
 impl Node {
     /// Handle an incoming SessionDatagram from a peer.
     ///
@@ -51,6 +71,13 @@ impl Node {
         // Local delivery: dispatch to session layer handlers
         if datagram.dest_addr == *self.node_addr() {
             self.stats_mut().forwarding.record_delivered(payload.len());
+            debug!(
+                phase = session_datagram_phase(&datagram),
+                src = %datagram.src_addr,
+                dest = %datagram.dest_addr,
+                bytes = datagram.payload.len(),
+                "Delivered SessionDatagram locally"
+            );
             self.handle_session_payload(&datagram.src_addr, &datagram.payload, datagram.path_mtu, incoming_ce)
                 .await;
             return;
@@ -119,6 +146,15 @@ impl Node {
             if outgoing_ce {
                 self.stats_mut().congestion.record_ce_forwarded();
             }
+            debug!(
+                phase = session_datagram_phase(&datagram),
+                src = %datagram.src_addr,
+                dest = %datagram.dest_addr,
+                next_hop = %self.peer_display_name(&next_hop_addr),
+                bytes = datagram.payload.len(),
+                ttl = datagram.ttl,
+                "Forwarded SessionDatagram"
+            );
         }
     }
 

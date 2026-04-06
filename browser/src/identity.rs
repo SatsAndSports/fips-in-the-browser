@@ -97,6 +97,17 @@ fn derive_node_addr(pubkey: &PublicKey) -> [u8; 16] {
     addr
 }
 
+/// Derive a NodeAddr from a 32-byte x-only public key.
+///
+/// This allows computing a remote node's NodeAddr from their npub without
+/// constructing a full PublicKey object. NodeAddr = SHA-256(x_only)[0..16].
+pub fn node_addr_from_x_only(x_bytes: &[u8; 32]) -> [u8; 16] {
+    let hash = Sha256::digest(x_bytes);
+    let mut addr = [0u8; 16];
+    addr.copy_from_slice(&hash[..16]);
+    addr
+}
+
 // ============================================================================
 // PublicKey helpers
 // ============================================================================
@@ -122,6 +133,14 @@ pub fn pubkey_to_bytes(pubkey: &PublicKey) -> [u8; 33] {
     let mut bytes = [0u8; 33];
     bytes.copy_from_slice(encoded.as_bytes());
     bytes
+}
+
+/// Encode a full public key as an npub string.
+pub fn pubkey_to_npub(pubkey: &PublicKey) -> String {
+    let encoded = pubkey.to_encoded_point(true);
+    let mut x = [0u8; 32];
+    x.copy_from_slice(encoded.x().unwrap());
+    encode_npub(&x)
 }
 
 /// Normalize a compressed public key to even parity for Noise pre-message hashing.

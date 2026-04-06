@@ -10,7 +10,9 @@ mod cipher;
 mod identity;
 mod mmp;
 mod noise;
+mod noise_xk;
 mod replay;
+mod session;
 mod tree;
 mod wire;
 
@@ -20,6 +22,7 @@ use mmp::ReceiverState;
 use noise::HandshakeState;
 use replay::ReplayWindow;
 use serde::Serialize;
+use session::SessionManager;
 use wasm_bindgen::prelude::*;
 use wire::current_time_ms;
 
@@ -65,6 +68,9 @@ struct ProcessResult {
     /// Multiple messages to send back (each is a complete FMP wire packet).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     responses: Vec<Vec<u8>>,
+    /// Session peer npub when a session becomes established.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_peer_npub: Option<String>,
     /// Decrypted payload (if any).
     #[serde(skip_serializing_if = "Option::is_none")]
     payload: Option<Vec<u8>>,
@@ -89,6 +95,9 @@ struct ProcessResult {
 pub struct FipsNode {
     identity: Identity,
     link: Option<LinkState>,
+    sessions: SessionManager,
+    /// Random epoch for session handshakes.
+    session_epoch: [u8; 8],
 }
 
 #[wasm_bindgen]
@@ -96,8 +105,14 @@ impl FipsNode {
     /// Create a new node with a random keypair.
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
+        let identity = Identity::generate();
+        let node_addr = *identity.node_addr();
+        let mut epoch = [0u8; 8];
+        let _ = getrandom::getrandom(&mut epoch);
         Self {
-            identity: Identity::generate(),
+            sessions: SessionManager::new(node_addr),
+            session_epoch: epoch,
+            identity,
             link: None,
         }
     }
@@ -105,7 +120,12 @@ impl FipsNode {
     /// Create from an existing nsec (bech32) or hex secret key.
     pub fn from_nsec(nsec: &str) -> Result<FipsNode, JsValue> {
         let identity = Identity::from_secret_str(nsec).map_err(|e| JsValue::from_str(&e))?;
+        let node_addr = *identity.node_addr();
+        let mut epoch = [0u8; 8];
+        let _ = getrandom::getrandom(&mut epoch);
         Ok(Self {
+            sessions: SessionManager::new(node_addr),
+            session_epoch: epoch,
             identity,
             link: None,
         })
@@ -165,6 +185,7 @@ impl FipsNode {
             other => ProcessResult {
                 msg_type: format!("unknown_phase_{other}"),
                 responses: vec![],
+                session_peer_npub: None,
                 payload: None,
                 info: Some(format!("Unknown FMP phase: {other:#x}")),
             },
@@ -176,6 +197,78 @@ impl FipsNode {
     /// Check if the link is established (handshake complete).
     pub fn is_established(&self) -> bool {
         matches!(self.link, Some(LinkState::Established { .. }))
+    }
+
+    /// Initiate an end-to-end session with a remote node (Noise XK).
+    ///
+    /// `dest_npub` is the remote node's npub string.
+    /// Returns FMP wire packets to send over the WebSocket.
+    pub fn connect_session(&mut self, dest_npub: &str) -> Result<Vec<u8>, JsValue> {
+        if self.is_session_established(dest_npub) {
+            return Err(JsValue::from_str(
+                "session already established for this destination",
+            ));
+        }
+
+        let x_only = identity::decode_npub(dest_npub).map_err(|e| JsValue::from_str(&e))?;
+        let dest_pub = identity::pubkey_from_x_only(&x_only).map_err(|e| JsValue::from_str(&e))?;
+
+        // Derive dest NodeAddr from x-only pubkey
+        let dest_addr = identity::node_addr_from_x_only(&x_only);
+
+        // Initiate session (builds Noise XK msg1 + SessionSetup)
+        let fsp_payload = self
+            .sessions
+            .initiate(
+                dest_addr,
+                &dest_pub,
+                self.session_epoch,
+                self.identity.secret_key(),
+            )
+            .map_err(|e| JsValue::from_str(&e))?;
+
+        // Wrap in SessionDatagram (link msg_type 0x00 envelope)
+        let datagram_inner = self.sessions.wrap_in_datagram(&dest_addr, &fsp_payload);
+
+        // Link-encrypt and return wire packet
+        self.build_encrypted_message(&datagram_inner)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Send a chat message through an established session.
+    ///
+    /// Returns FMP wire packets to send over the WebSocket.
+    pub fn send_message(&mut self, dest_npub: &str, text: &str) -> Result<Vec<u8>, JsValue> {
+        let x_only = identity::decode_npub(dest_npub).map_err(|e| JsValue::from_str(&e))?;
+        let dest_addr = identity::node_addr_from_x_only(&x_only);
+
+        // Encrypt at session layer (FSP)
+        let fsp_payload = self
+            .sessions
+            .send_data(
+                &dest_addr,
+                wire::FSP_PORT_CHAT,
+                wire::FSP_PORT_CHAT,
+                text.as_bytes(),
+            )
+            .map_err(|e| JsValue::from_str(&e))?;
+
+        // Wrap in SessionDatagram
+        let datagram_inner = self.sessions.wrap_in_datagram(&dest_addr, &fsp_payload);
+
+        // Link-encrypt
+        self.build_encrypted_message(&datagram_inner)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Check if a session is established with a given npub.
+    pub fn is_session_established(&self, dest_npub: &str) -> bool {
+        if let Ok(x_only) = identity::decode_npub(dest_npub) {
+            let dest_addr = identity::node_addr_from_x_only(&x_only);
+            self.sessions.is_established(&dest_addr)
+        } else {
+            false
+        }
     }
 }
 
@@ -261,6 +354,7 @@ impl FipsNode {
                         return Ok(ProcessResult {
                             msg_type: "msg2".to_string(),
                             responses: vec![],
+                            session_peer_npub: None,
                             payload: None,
                             info: Some(format!("Handshake OK, but TreeAnnounce failed: {e}")),
                         });
@@ -274,6 +368,7 @@ impl FipsNode {
                         return Ok(ProcessResult {
                             msg_type: "msg2".to_string(),
                             responses: responses,
+                            session_peer_npub: None,
                             payload: None,
                             info: Some(format!("Handshake OK, but FilterAnnounce failed: {e}")),
                         });
@@ -283,6 +378,7 @@ impl FipsNode {
                 Ok(ProcessResult {
                     msg_type: "msg2".to_string(),
                     responses,
+                    session_peer_npub: None,
                     payload: None,
                     info: Some(format!(
                         "Noise IK handshake complete! Link established. Sent TreeAnnounce + FilterAnnounce."
@@ -318,6 +414,7 @@ impl FipsNode {
                     return Ok(ProcessResult {
                         msg_type: "replay".to_string(),
                         responses: vec![],
+                        session_peer_npub: None,
                         payload: None,
                         info: Some(format!("Replay detected: counter {}", header.counter)),
                     });
@@ -337,6 +434,7 @@ impl FipsNode {
                         return Ok(ProcessResult {
                             msg_type: "data_short".to_string(),
                             responses: vec![],
+                            session_peer_npub: None,
                             payload: Some(plaintext),
                             info: Some("Encrypted frame (inner header too short)".to_string()),
                         });
@@ -368,6 +466,7 @@ impl FipsNode {
             wire::MSG_TYPE_TREE_ANNOUNCE => Ok(ProcessResult {
                 msg_type: "tree_announce".to_string(),
                 responses: vec![],
+                session_peer_npub: None,
                 payload: None,
                 info: Some(format!("TreeAnnounce received ({} bytes)", payload.len())),
             }),
@@ -375,6 +474,7 @@ impl FipsNode {
             wire::MSG_TYPE_FILTER_ANNOUNCE => Ok(ProcessResult {
                 msg_type: "filter_announce".to_string(),
                 responses: vec![],
+                session_peer_npub: None,
                 payload: None,
                 info: Some(format!("FilterAnnounce received ({} bytes)", payload.len())),
             }),
@@ -387,6 +487,7 @@ impl FipsNode {
                         return Ok(ProcessResult {
                             msg_type: "sender_report".to_string(),
                             responses: vec![],
+                            session_peer_npub: None,
                             payload: None,
                             info: Some(format!(
                                 "SenderReport received, ReceiverReport failed: {e}"
@@ -397,6 +498,7 @@ impl FipsNode {
                 Ok(ProcessResult {
                     msg_type: "sender_report".to_string(),
                     responses,
+                    session_peer_npub: None,
                     payload: None,
                     info: Some("SenderReport received, sent ReceiverReport".to_string()),
                 })
@@ -405,23 +507,17 @@ impl FipsNode {
             wire::MSG_TYPE_RECEIVER_REPORT => Ok(ProcessResult {
                 msg_type: "receiver_report".to_string(),
                 responses: vec![],
+                session_peer_npub: None,
                 payload: None,
                 info: None,
             }),
 
-            wire::MSG_TYPE_SESSION_DATAGRAM => Ok(ProcessResult {
-                msg_type: "session_datagram".to_string(),
-                responses: vec![],
-                payload: Some(payload.to_vec()),
-                info: Some(format!(
-                    "SessionDatagram ({} bytes, Phase 3 needed)",
-                    payload.len()
-                )),
-            }),
+            wire::MSG_TYPE_SESSION_DATAGRAM => self.handle_session_datagram(payload),
 
             wire::MSG_TYPE_HEARTBEAT => Ok(ProcessResult {
                 msg_type: "heartbeat".to_string(),
                 responses: vec![],
+                session_peer_npub: None,
                 payload: None,
                 info: None,
             }),
@@ -429,6 +525,7 @@ impl FipsNode {
             wire::MSG_TYPE_DISCONNECT => Ok(ProcessResult {
                 msg_type: "disconnect".to_string(),
                 responses: vec![],
+                session_peer_npub: None,
                 payload: None,
                 info: Some("Disconnect received".to_string()),
             }),
@@ -436,10 +533,96 @@ impl FipsNode {
             other => Ok(ProcessResult {
                 msg_type: format!("link_msg_{other:#04x}"),
                 responses: vec![],
+                session_peer_npub: None,
                 payload: Some(payload.to_vec()),
                 info: Some(format!("Unknown link message type: {other:#04x}")),
             }),
         }
+    }
+
+    // ========================================================================
+    // SessionDatagram handler
+    // ========================================================================
+
+    fn handle_session_datagram(&mut self, payload: &[u8]) -> Result<ProcessResult, JsValue> {
+        // Parse SessionDatagram envelope (after msg_type 0x00)
+        let (ttl, _path_mtu, src_addr, dest_addr, fsp_payload) =
+            wire::parse_session_datagram_body(payload)
+                .ok_or_else(|| JsValue::from_str("invalid SessionDatagram (too short)"))?;
+
+        let our_addr = *self.identity.node_addr();
+
+        // Check if this is addressed to us
+        if dest_addr != our_addr {
+            return Ok(ProcessResult {
+                msg_type: "session_datagram_forward".to_string(),
+                responses: vec![],
+                session_peer_npub: None,
+                payload: None,
+                info: Some(format!(
+                    "SessionDatagram not for us (dest={}, ttl={})",
+                    hex::encode(dest_addr),
+                    ttl
+                )),
+            });
+        }
+
+        // Process through SessionManager
+        let event = self
+            .sessions
+            .process_incoming(
+                src_addr,
+                fsp_payload,
+                self.session_epoch,
+                self.identity.secret_key(),
+            )
+            .map_err(|e| JsValue::from_str(&e))?;
+
+        // Build link-layer responses (wrap FSP responses in SessionDatagrams + link-encrypt)
+        let mut responses = Vec::new();
+        for fsp_resp in &event.fsp_responses {
+            let datagram_inner = self.sessions.wrap_in_datagram(&src_addr, fsp_resp);
+            match self.build_encrypted_message(&datagram_inner) {
+                Ok(pkt) => responses.push(pkt),
+                Err(e) => {
+                    return Ok(ProcessResult {
+                        msg_type: "session_error".to_string(),
+                        responses: vec![],
+                        session_peer_npub: None,
+                        payload: None,
+                        info: Some(format!("Failed to encrypt session response: {e}")),
+                    });
+                }
+            }
+        }
+
+        // Build result
+        let mut result = ProcessResult {
+            msg_type: "session".to_string(),
+            responses,
+            session_peer_npub: event.remote_npub,
+            payload: None,
+            info: Some(event.info),
+        };
+
+        // If there's application data, include it
+        if let Some((port, data)) = event.payload {
+            if port == wire::FSP_PORT_CHAT {
+                let text = String::from_utf8_lossy(&data).to_string();
+                result.msg_type = "session_chat".to_string();
+                result.payload = Some(data);
+                result.info = Some(format!(
+                    "Chat from {}: {}",
+                    hex::encode(&event.from[..4]),
+                    text
+                ));
+            } else {
+                result.msg_type = format!("session_port_{port}");
+                result.payload = Some(data);
+            }
+        }
+
+        Ok(result)
     }
 
     // ========================================================================

@@ -38,14 +38,14 @@ pub const HANDSHAKE_MSG2_SIZE: usize = PUBKEY_SIZE + EPOCH_ENCRYPTED_SIZE;
 // SymmetricState
 // ============================================================================
 
-struct SymmetricState {
+pub(crate) struct SymmetricState {
     ck: [u8; 32],
     h: [u8; 32],
     cipher: CipherState,
 }
 
 impl SymmetricState {
-    fn initialize(protocol_name: &[u8]) -> Self {
+    pub(crate) fn initialize(protocol_name: &[u8]) -> Self {
         let h = if protocol_name.len() <= 32 {
             let mut h = [0u8; 32];
             h[..protocol_name.len()].copy_from_slice(protocol_name);
@@ -61,14 +61,14 @@ impl SymmetricState {
         }
     }
 
-    fn mix_hash(&mut self, data: &[u8]) {
+    pub(crate) fn mix_hash(&mut self, data: &[u8]) {
         let mut hasher = Sha256::new();
         hasher.update(self.h);
         hasher.update(data);
         self.h = hasher.finalize().into();
     }
 
-    fn mix_key(&mut self, ikm: &[u8]) {
+    pub(crate) fn mix_key(&mut self, ikm: &[u8]) {
         let hk = Hkdf::<Sha256>::new(Some(&self.ck), ikm);
         let mut output = [0u8; 64];
         hk.expand(&[], &mut output)
@@ -79,19 +79,19 @@ impl SymmetricState {
         self.cipher.initialize_key(key);
     }
 
-    fn encrypt_and_hash(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    pub(crate) fn encrypt_and_hash(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
         let ct = self.cipher.encrypt(plaintext)?;
         self.mix_hash(&ct);
         Ok(ct)
     }
 
-    fn decrypt_and_hash(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    pub(crate) fn decrypt_and_hash(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
         let pt = self.cipher.decrypt(ciphertext)?;
         self.mix_hash(ciphertext);
         Ok(pt)
     }
 
-    fn split(&self) -> (CipherState, CipherState) {
+    pub(crate) fn split(&self) -> (CipherState, CipherState) {
         let hk = Hkdf::<Sha256>::new(Some(&self.ck), &[]);
         let mut output = [0u8; 64];
         hk.expand(&[], &mut output)

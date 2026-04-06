@@ -132,15 +132,6 @@
   <div class="status disconnected" id="status">Loading WASM...</div>
 </div>
 
-<!-- Send panel -->
-<div class="panel">
-  <div class="panel-title">Send Data</div>
-  <div id="sendRow">
-    <input type="text" id="msg" placeholder="Type a message..." disabled>
-    <button class="btn-send" id="btnSend" disabled>Send</button>
-  </div>
-</div>
-
 <!-- Log panel -->
 <div class="panel">
   <div class="panel-title">Protocol Log</div>
@@ -157,8 +148,6 @@ const $url         = document.getElementById('url');
 const $remoteNpub  = document.getElementById('remoteNpub');
 const $btnConnect  = document.getElementById('btnConnect');
 const $status      = document.getElementById('status');
-const $msg         = document.getElementById('msg');
-const $btnSend     = document.getElementById('btnSend');
 const $log         = document.getElementById('log');
 
 let node = null;
@@ -237,19 +226,27 @@ $btnConnect.addEventListener('click', () => {
       if (result.msg_type === 'msg2') {
         log('log-hs', `Received msg2 — ${result.info}`);
         setStatus('Established', 'connected');
-        $msg.disabled = false;
-        $btnSend.disabled = false;
-      } else if (result.msg_type.startsWith('data_')) {
-        const text = result.payload
-          ? new TextDecoder().decode(new Uint8Array(result.payload))
-          : '';
-        log('log-recv', `← [${result.msg_type}] ${text}`);
-        if (result.info) log('log-info', `  ${result.info}`);
+      } else if (result.msg_type === 'tree_announce') {
+        log('log-info', `← ${result.info}`);
+      } else if (result.msg_type === 'filter_announce') {
+        log('log-info', `← ${result.info}`);
+      } else if (result.msg_type === 'sender_report') {
+        log('log-info', `← ${result.info}`);
+      } else if (result.msg_type === 'receiver_report') {
+        // Informational — peer sent us a receiver report
+      } else if (result.msg_type === 'session_datagram') {
+        log('log-recv', `← SessionDatagram (${result.payload ? result.payload.length : 0} bytes)`);
       } else if (result.msg_type === 'replay') {
         log('log-err', `Replay: ${result.info}`);
       } else {
-        log('log-info', `Received: ${result.msg_type}`);
-        if (result.info) log('log-info', `  ${result.info}`);
+        log('log-info', `← [${result.msg_type}] ${result.info || ''}`);
+      }
+
+      // Send any response messages (TreeAnnounce, FilterAnnounce, ReceiverReport, etc.)
+      if (result.responses && result.responses.length > 0) {
+        for (const resp of result.responses) {
+          ws.send(new Uint8Array(resp));
+        }
       }
     } catch (e) {
       log('log-err', `Processing error: ${e}`);
@@ -259,8 +256,6 @@ $btnConnect.addEventListener('click', () => {
   ws.onclose = () => {
     log('log-info', 'WebSocket closed.');
     setStatus('Disconnected', 'disconnected');
-    $msg.disabled = true;
-    $btnSend.disabled = true;
     $btnConnect.disabled = false;
     ws = null;
   };
@@ -272,25 +267,6 @@ $btnConnect.addEventListener('click', () => {
   };
 });
 
-// ── Send ──────────────────────────────────────────────
-
-function send() {
-  const text = $msg.value.trim();
-  if (!text || !ws || ws.readyState !== WebSocket.OPEN || !node.is_established()) return;
-
-  const payload = new TextEncoder().encode(text);
-  try {
-    const pkt = node.send_data(payload);
-    ws.send(pkt);
-    log('log-send', `→ ${text} (${pkt.length} bytes on wire)`);
-    $msg.value = '';
-  } catch (e) {
-    log('log-err', `Send error: ${e}`);
-  }
-}
-
-$btnSend.addEventListener('click', send);
-$msg.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
 </script>
 </body>
 </html>

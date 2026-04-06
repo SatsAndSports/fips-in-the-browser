@@ -11,9 +11,6 @@ use chacha20poly1305::{
 /// AEAD tag size.
 pub const TAG_SIZE: usize = 16;
 
-/// Maximum Noise message size.
-pub const MAX_MESSAGE_SIZE: usize = 65535;
-
 /// Symmetric cipher state for post-handshake encryption.
 #[derive(Clone)]
 pub struct CipherState {
@@ -72,22 +69,6 @@ impl CipherState {
         let cipher =
             ChaCha20Poly1305::new_from_slice(&self.key).map_err(|_| "bad key".to_string())?;
         let nonce = self.next_nonce()?;
-        cipher
-            .decrypt(&nonce, ciphertext)
-            .map_err(|_| "decryption failed".to_string())
-    }
-
-    /// Decrypt with an explicit counter (transport phase).
-    pub fn decrypt_with_counter(&self, ciphertext: &[u8], counter: u64) -> Result<Vec<u8>, String> {
-        if !self.has_key {
-            return Ok(ciphertext.to_vec());
-        }
-        if ciphertext.len() < TAG_SIZE {
-            return Err("ciphertext too short".to_string());
-        }
-        let cipher =
-            ChaCha20Poly1305::new_from_slice(&self.key).map_err(|_| "bad key".to_string())?;
-        let nonce = Self::counter_to_nonce(counter);
         cipher
             .decrypt(&nonce, ciphertext)
             .map_err(|_| "decryption failed".to_string())
@@ -158,9 +139,5 @@ impl CipherState {
 
     pub fn nonce(&self) -> u64 {
         self.nonce
-    }
-
-    pub fn has_key(&self) -> bool {
-        self.has_key
     }
 }

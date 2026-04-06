@@ -146,9 +146,10 @@ fn generate_ephemeral() -> (SecretKey, PublicKey) {
 
 /// Handshake role.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum Role {
     Initiator,
-    Responder,
+    Responder, // Needed for Phase 3 (Noise XK sessions)
 }
 
 /// Handshake progress.
@@ -284,35 +285,8 @@ impl HandshakeState {
         self.symmetric.mix_key(&ee);
 
         // <- se: DH(e, rs), mix into key
-        // (initiator uses their ephemeral with responder's static — note: in
-        // the IK pattern this is DH(re, s) from responder's perspective, but
-        // from initiator's perspective it's DH(e, rs). However, looking at the
-        // fips code: the initiator computes `ecdh(ephemeral.secret, remote_static)`
-        // which is DH(e, rs). Wait, the fips msg2 responder does:
-        //   se = ecdh(static_keypair.secret, re)  [DH(s, re)]
-        // And the fips msg2 initiator reads with:
-        //   se = ecdh(ephemeral.secret, rs)        [DH(e, rs)]
-        // But DH(s, re) != DH(e, rs)... these are different keys.
-        // Actually, the fips initiator code at line 532-533:
-        //   let rs = self.remote_static...
-        //   let se = self.ecdh(&ephemeral.secret_key(), &rs);
-        // This is DH(e_initiator, s_responder). But the responder computed:
-        //   let se = self.ecdh(&self.static_keypair.secret_key(), &re);
-        // This is DH(s_responder, e_initiator). These ARE equal: a*B = b*A
-        // where a=e_initiator, B=s_responder_pub (or A=e_initiator_pub, b=s_responder).
-        // Wait no. Let me re-check. The responder writes msg2 with:
-        //   se = ecdh(s_responder_secret, re_initiator)
-        // The initiator reads msg2 with:
-        //   se = ecdh(e_initiator_secret, rs_responder)
-        // Since e_initiator_secret * rs_responder_pub = s_responder_secret * re_initiator_pub?
-        // No! That's not right either. Let me think carefully.
-        //
-        // Responder msg2 write does:
-        //   se = DH(s_resp_private, e_init_public) = s_resp * E_init
-        // Initiator msg2 read does:
-        //   se = DH(e_init_private, s_resp_public) = e_init * S_resp
-        // These are equal because: s_resp * (e_init * G) = e_init * (s_resp * G)
-        // ✓ Correct. Same shared point.)
+        // DH symmetry: DH(e_init, s_resp) == DH(s_resp, e_init) because
+        // scalar multiplication on the curve is commutative: a*B = b*A.
         let rs = self.remote_static.as_ref().unwrap();
         let se = ecdh(e_sec, rs);
         self.symmetric.mix_key(&se);
@@ -349,15 +323,5 @@ impl HandshakeState {
         };
 
         Ok((send, recv, hash, remote))
-    }
-
-    /// Get the remote peer's epoch (available after read_message_2).
-    pub fn remote_epoch(&self) -> Option<[u8; 8]> {
-        self.remote_epoch
-    }
-
-    /// Check if handshake is complete.
-    pub fn is_complete(&self) -> bool {
-        self.progress == Progress::Complete
     }
 }

@@ -1,6 +1,6 @@
 //! FMP wire format (link-layer packet framing).
 //!
-//! Adapted from fips `src/node/wire.rs`. Pure byte layout, no crypto deps.
+//! Pure byte layout, no crypto deps. Adapted from fips `src/node/wire.rs`.
 //!
 //! ## Common Prefix (4 bytes, all packets)
 //! ```text
@@ -15,6 +15,10 @@
 //! | 0x0   | Encrypted frame | 32+ bytes       |
 
 use crate::noise::{HANDSHAKE_MSG1_SIZE, HANDSHAKE_MSG2_SIZE};
+
+// ============================================================================
+// Protocol constants
+// ============================================================================
 
 /// FMP protocol version.
 pub const FMP_VERSION: u8 = 0;
@@ -41,8 +45,53 @@ pub const ENCRYPTED_MIN_SIZE: usize = ESTABLISHED_HEADER_SIZE + 16;
 /// Inner header size (timestamp + message type).
 pub const INNER_HEADER_SIZE: usize = 5;
 
-// Flag bits (byte 1 of common prefix, phase 0x0 only).
-pub const FLAG_KEY_EPOCH: u8 = 0x01;
+// ============================================================================
+// Link-layer message type constants
+// ============================================================================
+
+/// SessionDatagram — encapsulated session-layer payload for multi-hop forwarding.
+pub const MSG_TYPE_SESSION_DATAGRAM: u8 = 0x00;
+/// MMP SenderReport.
+pub const MSG_TYPE_SENDER_REPORT: u8 = 0x01;
+/// MMP ReceiverReport.
+pub const MSG_TYPE_RECEIVER_REPORT: u8 = 0x02;
+/// TreeAnnounce — spanning tree declaration.
+pub const MSG_TYPE_TREE_ANNOUNCE: u8 = 0x10;
+/// FilterAnnounce — bloom filter routing update.
+pub const MSG_TYPE_FILTER_ANNOUNCE: u8 = 0x20;
+/// Disconnect — orderly link closure.
+pub const MSG_TYPE_DISCONNECT: u8 = 0x50;
+/// Heartbeat — liveness keepalive (empty payload).
+pub const MSG_TYPE_HEARTBEAT: u8 = 0x51;
+
+// ============================================================================
+// Time helpers
+// ============================================================================
+
+/// Get current time in milliseconds since epoch.
+pub fn current_time_ms() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+}
+
+/// Get current Unix timestamp in seconds.
+pub fn current_unix_secs() -> u64 {
+    current_time_ms() / 1000
+}
+
+/// Get a session-relative timestamp in milliseconds (wrapping u32).
+pub fn current_timestamp_ms() -> u32 {
+    (current_time_ms() & 0xFFFFFFFF) as u32
+}
 
 // ============================================================================
 // Parsing
@@ -50,10 +99,7 @@ pub const FLAG_KEY_EPOCH: u8 = 0x01;
 
 /// Parsed common prefix.
 pub struct CommonPrefix {
-    pub version: u8,
     pub phase: u8,
-    pub flags: u8,
-    pub payload_len: u16,
 }
 
 impl CommonPrefix {
@@ -62,34 +108,7 @@ impl CommonPrefix {
             return None;
         }
         Some(Self {
-            version: data[0] >> 4,
             phase: data[0] & 0x0F,
-            flags: data[1],
-            payload_len: u16::from_le_bytes([data[2], data[3]]),
-        })
-    }
-}
-
-/// Parsed msg1 header.
-pub struct Msg1Header {
-    pub sender_idx: u32,
-    pub noise_payload: Vec<u8>,
-}
-
-impl Msg1Header {
-    pub fn parse(data: &[u8]) -> Option<Self> {
-        if data.len() < MSG1_WIRE_SIZE {
-            return None;
-        }
-        let prefix = CommonPrefix::parse(data)?;
-        if prefix.version != FMP_VERSION || prefix.phase != PHASE_MSG1 {
-            return None;
-        }
-        let sender_idx = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-        let noise_payload = data[8..MSG1_WIRE_SIZE].to_vec();
-        Some(Self {
-            sender_idx,
-            noise_payload,
         })
     }
 }
@@ -97,7 +116,6 @@ impl Msg1Header {
 /// Parsed msg2 header.
 pub struct Msg2Header {
     pub sender_idx: u32,
-    pub receiver_idx: u32,
     pub noise_payload: Vec<u8>,
 }
 
@@ -107,15 +125,14 @@ impl Msg2Header {
             return None;
         }
         let prefix = CommonPrefix::parse(data)?;
-        if prefix.version != FMP_VERSION || prefix.phase != PHASE_MSG2 {
+        if prefix.phase != PHASE_MSG2 {
             return None;
         }
         let sender_idx = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-        let receiver_idx = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+        // Skip receiver_idx at [8..12] — we don't need it (it's our own index).
         let noise_payload = data[12..MSG2_WIRE_SIZE].to_vec();
         Some(Self {
             sender_idx,
-            receiver_idx,
             noise_payload,
         })
     }
@@ -123,9 +140,6 @@ impl Msg2Header {
 
 /// Parsed encrypted frame header.
 pub struct EncryptedHeader {
-    pub flags: u8,
-    pub payload_len: u16,
-    pub receiver_idx: u32,
     pub counter: u64,
     pub header_bytes: [u8; ESTABLISHED_HEADER_SIZE],
 }
@@ -140,18 +154,12 @@ impl EncryptedHeader {
         if version != FMP_VERSION || phase != PHASE_ESTABLISHED {
             return None;
         }
-        let flags = data[1];
-        let payload_len = u16::from_le_bytes([data[2], data[3]]);
-        let receiver_idx = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
         let counter = u64::from_le_bytes([
             data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
         ]);
         let mut header_bytes = [0u8; ESTABLISHED_HEADER_SIZE];
         header_bytes.copy_from_slice(&data[..ESTABLISHED_HEADER_SIZE]);
         Some(Self {
-            flags,
-            payload_len,
-            receiver_idx,
             counter,
             header_bytes,
         })
@@ -166,19 +174,15 @@ impl EncryptedHeader {
 // Building
 // ============================================================================
 
-fn ver_phase_byte(version: u8, phase: u8) -> u8 {
-    (version << 4) | (phase & 0x0F)
-}
-
 /// Build a msg1 wire packet.
 ///
 /// Wire format: [prefix:4][sender_idx:4 LE][noise_msg1:106] = 114 bytes.
 pub fn build_msg1(sender_idx: u32, noise_msg1: &[u8]) -> Vec<u8> {
     debug_assert_eq!(noise_msg1.len(), HANDSHAKE_MSG1_SIZE);
-    let payload_len = (4 + noise_msg1.len()) as u16; // sender_idx + noise
+    let payload_len = (4 + noise_msg1.len()) as u16;
     let mut pkt = Vec::with_capacity(MSG1_WIRE_SIZE);
-    pkt.push(ver_phase_byte(FMP_VERSION, PHASE_MSG1));
-    pkt.push(0x00); // flags
+    pkt.push((FMP_VERSION << 4) | PHASE_MSG1);
+    pkt.push(0x00);
     pkt.extend_from_slice(&payload_len.to_le_bytes());
     pkt.extend_from_slice(&sender_idx.to_le_bytes());
     pkt.extend_from_slice(noise_msg1);
@@ -186,36 +190,23 @@ pub fn build_msg1(sender_idx: u32, noise_msg1: &[u8]) -> Vec<u8> {
     pkt
 }
 
-/// Build an encrypted frame wire packet.
+/// Build the 16-byte FMP header for an established frame.
 ///
-/// Wire format: [header:16][ciphertext+tag].
-/// The 16-byte header is used as AEAD AAD.
-pub fn build_encrypted_frame(
+/// Used as both the wire header and the AEAD AAD. `payload_len` is the
+/// inner plaintext length (before the AEAD tag is appended).
+pub fn build_established_header(
     flags: u8,
+    payload_len: u16,
     receiver_idx: u32,
     counter: u64,
-    ciphertext: &[u8],
-) -> Vec<u8> {
-    let payload_len = ciphertext.len().saturating_sub(16) as u16; // exclude tag
-    let mut pkt = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + ciphertext.len());
-    pkt.push(ver_phase_byte(FMP_VERSION, PHASE_ESTABLISHED));
-    pkt.push(flags);
-    pkt.extend_from_slice(&payload_len.to_le_bytes());
-    pkt.extend_from_slice(&receiver_idx.to_le_bytes());
-    pkt.extend_from_slice(&counter.to_le_bytes());
-    pkt.extend_from_slice(ciphertext);
-    pkt
-}
-
-/// Build inner header (prepended to plaintext before AEAD encryption).
-///
-/// [timestamp:4 LE][msg_type:1][payload...]
-pub fn build_inner(timestamp: u32, msg_type: u8, payload: &[u8]) -> Vec<u8> {
-    let mut inner = Vec::with_capacity(INNER_HEADER_SIZE + payload.len());
-    inner.extend_from_slice(&timestamp.to_le_bytes());
-    inner.push(msg_type);
-    inner.extend_from_slice(payload);
-    inner
+) -> [u8; ESTABLISHED_HEADER_SIZE] {
+    let mut hdr = [0u8; ESTABLISHED_HEADER_SIZE];
+    hdr[0] = (FMP_VERSION << 4) | PHASE_ESTABLISHED;
+    hdr[1] = flags;
+    hdr[2..4].copy_from_slice(&payload_len.to_le_bytes());
+    hdr[4..8].copy_from_slice(&receiver_idx.to_le_bytes());
+    hdr[8..16].copy_from_slice(&counter.to_le_bytes());
+    hdr
 }
 
 /// Parse inner header from decrypted plaintext.

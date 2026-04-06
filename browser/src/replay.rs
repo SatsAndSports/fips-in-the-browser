@@ -90,15 +90,6 @@ impl ReplayWindow {
             }
         }
     }
-
-    pub fn highest(&self) -> u64 {
-        self.highest
-    }
-
-    pub fn reset(&mut self) {
-        self.highest = 0;
-        self.bitmap = [0; REPLAY_WINDOW_SIZE / 64];
-    }
 }
 
 impl Default for ReplayWindow {

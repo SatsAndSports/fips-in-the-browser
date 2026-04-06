@@ -56,19 +56,6 @@ impl Identity {
         &self.secret
     }
 
-    /// Get the public key.
-    pub fn public_key(&self) -> &PublicKey {
-        &self.public
-    }
-
-    /// Get the 33-byte compressed public key (SEC1).
-    pub fn pubkey_bytes(&self) -> [u8; 33] {
-        let encoded = self.public.to_encoded_point(true);
-        let mut bytes = [0u8; 33];
-        bytes.copy_from_slice(encoded.as_bytes());
-        bytes
-    }
-
     /// Get the 32-byte x-only public key (no parity prefix).
     pub fn pubkey_x_only(&self) -> [u8; 32] {
         let encoded = self.public.to_encoded_point(true);
@@ -90,13 +77,6 @@ impl Identity {
     /// Encode as bech32 npub string (NIP-19).
     pub fn npub(&self) -> String {
         encode_npub(&self.pubkey_x_only())
-    }
-
-    /// Get secret key as raw 32 bytes.
-    pub fn secret_bytes(&self) -> [u8; 32] {
-        let mut bytes = [0u8; 32];
-        bytes.copy_from_slice(self.secret.to_bytes().as_slice());
-        bytes
     }
 }
 

@@ -263,15 +263,14 @@ let vmFocused = false;
 function startSessionKeepalive() {
   if (sessionKeepaliveTimer) return;
   sessionKeepaliveTimer = setInterval(() => {
-    if (
-      ws &&
-      ws.readyState === WebSocket.OPEN &&
-      sessionDest &&
-      node.is_session_established(sessionDest)
-    ) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
       try {
-        const pkt = node.send_keepalive(sessionDest);
-        ws.send(pkt);
+        const packets = node.send_keepalives();
+        if (packets && packets.length) {
+          for (const pkt of packets) {
+            ws.send(pkt);
+          }
+        }
       } catch (e) {
         console.warn('Session keepalive failed:', e);
       }

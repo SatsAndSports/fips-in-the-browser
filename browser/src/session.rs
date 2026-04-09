@@ -52,7 +52,7 @@ pub enum SessionEventKind {
     SenderReport,
     ReceiverReport,
     Data,
-    Other(u8),
+    Other,
     Replay,
 }
 
@@ -86,6 +86,17 @@ impl SessionManager {
             self.sessions.get(dest),
             Some(SessionState::Established { .. })
         )
+    }
+
+    /// Return all established session destination addresses.
+    pub fn established_destinations(&self) -> Vec<[u8; 16]> {
+        self.sessions
+            .iter()
+            .filter_map(|(addr, state)| match state {
+                SessionState::Established { .. } => Some(*addr),
+                _ => None,
+            })
+            .collect()
     }
 
     // ========================================================================
@@ -415,7 +426,7 @@ impl SessionManager {
                         remote_npub: None,
                         payload: None,
                         from: src_addr,
-                        kind: SessionEventKind::Other(msg_type),
+                        kind: SessionEventKind::Other,
                     })
                 }
             }

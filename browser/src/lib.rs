@@ -375,6 +375,28 @@ impl FipsNode {
             .map_err(|e| JsValue::from_str(&e))
     }
 
+    /// Build keepalive packets for all established sessions.
+    pub fn send_keepalives(&mut self) -> Result<JsValue, JsValue> {
+        let destinations = self.sessions.established_destinations();
+        let mut packets = Vec::new();
+
+        for dest_addr in destinations {
+            let fsp_payload = match self.sessions.send_data(&dest_addr, 0, 0, &[]) {
+                Ok(payload) => payload,
+                Err(_) => continue,
+            };
+
+            let datagram_inner = self.sessions.wrap_in_datagram(&dest_addr, &fsp_payload);
+            let pkt = match self.build_encrypted_message(&datagram_inner) {
+                Ok(pkt) => pkt,
+                Err(_) => continue,
+            };
+            packets.push(pkt);
+        }
+
+        serde_wasm_bindgen::to_value(&packets).map_err(|e| JsValue::from_str(&format!("{e}")))
+    }
+
     /// Check if a session is established with a given npub.
     pub fn is_session_established(&self, dest_npub: &str) -> bool {
         if let Ok(x_only) = identity::decode_npub(dest_npub) {

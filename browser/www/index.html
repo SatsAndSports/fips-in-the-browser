@@ -353,9 +353,11 @@ function updateCommands() {
     '# In the VM shell, try:',
     `ifconfig eth0 up`,
     `ifconfig eth0 add ${guestIp}/8`,
-    `# The browser bridge will answer NDP for ${gatewayIp}`,
+    `echo "nameserver ${gatewayIp}" > /etc/resolv.conf`,
+    '',
+    `# The browser bridge answers NDP + DNS for all fd::/8`,
     `ping6 ${gatewayIp}`,
-    `# or: ping -6 ${gatewayIp}`,
+    `# or: ping -6 <npub1...>.fips`,
     '',
     `# Bridge gateway MAC (for reference): ${gatewayMacText}`,
   ].join('\n');
@@ -566,6 +568,7 @@ async function uploadInitScript() {
     'set -x',
     `ifconfig eth0 up`,
     `ifconfig eth0 add ${$myIpv6.textContent}/8`,
+    `echo "nameserver ${$gatewayIpv6.textContent}" > /etc/resolv.conf`,
     'sleep 3',
     `ping -6 -c 3 ${$gatewayIpv6.textContent} || ping6 -c 3 ${$gatewayIpv6.textContent}`,
   ].join('\n') + '\n';
@@ -630,14 +633,23 @@ function handleGuestEthernet(frame) {
 
   if (payload.length < 40) return;
 
-  // If this is Neighbor Solicitation for the gateway IPv6, answer locally.
-  if (isNeighborSolicitationForGateway(payload)) {
+  // Answer Neighbor Solicitation for any fd::/8 FIPS address (proxy NDP).
+  if (isNeighborSolicitation(payload)) {
     const na = buildNeighborAdvertisement(payload);
     if (na) {
       vm.bus.send('net0-receive', na);
-      log('log-vm', '[vm]', 'Answered Neighbor Solicitation for gateway.');
     }
     return;
+  }
+
+  // Intercept DNS queries (UDP port 53) and resolve .fips names locally.
+  if (isDnsQuery(payload)) {
+    const dnsResponse = handleGuestDnsQuery(payload);
+    if (dnsResponse) {
+      vm.bus.send('net0-receive', dnsResponse);
+      return;
+    }
+    // Fall through to forward if we couldn't handle it
   }
 
   // Forward only FIPS IPv6 packets for now.
@@ -685,23 +697,25 @@ function buildEthernetFrame(dstMac, srcMac, etherType, payload) {
   return frame;
 }
 
-function isNeighborSolicitationForGateway(ipv6Packet) {
-  const gateway = parseIpv6Text($gatewayIpv6.textContent);
-  if (!gateway) return false;
+function isNeighborSolicitation(ipv6Packet) {
   if (ipv6Packet.length < 40 + 24) return false;
   if (ipv6Packet[6] !== 58) return false; // ICMPv6
   const icmp = ipv6Packet.slice(40);
   if (icmp[0] !== 135) return false; // Neighbor Solicitation
   const target = icmp.slice(8, 24);
-  return bytesEqual(target, gateway);
+  // Answer NDP for any fd::/8 address — the browser bridge proxies the
+  // entire FIPS mesh, so the guest can reach any FIPS peer via us.
+  return target[0] === 0xfd;
 }
 
 function buildNeighborAdvertisement(requestIpv6) {
   if (!guestMac) return null;
-  const gateway = parseIpv6Text($gatewayIpv6.textContent);
-  if (!gateway) return null;
 
-  const src = gateway;
+  // Extract the solicited target address from the NS message
+  const icmpOffset = 40;
+  const target = requestIpv6.slice(icmpOffset + 8, icmpOffset + 24);
+
+  const src = new Uint8Array(target); // reply from the target address
   const dst = requestIpv6.slice(8, 24); // requester source
   const hopLimit = 255;
 
@@ -710,7 +724,7 @@ function buildNeighborAdvertisement(requestIpv6) {
   icmp[1] = 0;
   // checksum at [2..4]
   icmp[4] = 0x60; // Solicited + Override flags
-  icmp.set(gateway, 8); // target address
+  icmp.set(target, 8); // target address
   icmp[24] = 2; // target link-layer address option
   icmp[25] = 1; // length = 1 * 8 bytes
   icmp.set(gatewayMac, 26);
@@ -776,6 +790,138 @@ function parseIpv6Text(text) {
     out[i * 2 + 1] = value & 0xFF;
   }
   return out;
+}
+
+// ========================================================================
+// DNS interception — resolve .fips names locally for the VM guest
+// ========================================================================
+
+const UDP_NEXT_HEADER = 17;
+const DNS_PORT = 53;
+
+/** Check if an IPv6 packet is a UDP datagram to port 53. */
+function isDnsQuery(ipv6Packet) {
+  if (ipv6Packet.length < 40 + 8) return false; // IPv6 header + UDP header
+  if (ipv6Packet[6] !== UDP_NEXT_HEADER) return false;
+  const dstPort = (ipv6Packet[40 + 2] << 8) | ipv6Packet[40 + 3];
+  return dstPort === DNS_PORT;
+}
+
+/**
+ * Handle a DNS query from the VM guest.
+ * Extracts the DNS payload, passes it to the WASM resolver, and wraps
+ * the response back in UDP + IPv6 + Ethernet for injection into the VM.
+ * Returns the Ethernet frame or null on failure.
+ */
+function handleGuestDnsQuery(ipv6Packet) {
+  if (!node || !guestMac) return null;
+
+  // Parse source/dest from IPv6 header
+  const guestSrc = ipv6Packet.slice(8, 24);
+  const dnsDst = ipv6Packet.slice(24, 40);
+
+  // Parse UDP header (starts at offset 40)
+  const srcPort = (ipv6Packet[40] << 8) | ipv6Packet[41];
+  // dstPort is 53 (already checked)
+  const udpPayload = ipv6Packet.slice(48); // skip 40 IPv6 + 8 UDP
+
+  if (udpPayload.length < 12) return null; // too short to be a DNS packet
+
+  // Pass raw DNS bytes to WASM resolver
+  const dnsResponse = node.handle_dns_query(udpPayload);
+  if (!dnsResponse) return null;
+
+  const dnsBytes = new Uint8Array(dnsResponse);
+
+  // Log what we resolved
+  try {
+    // Quick peek: if answers > 0, log the query name
+    const qdcount = (udpPayload[4] << 8) | udpPayload[5];
+    if (qdcount > 0) {
+      const qname = parseDnsName(udpPayload, 12);
+      const ancount = (dnsBytes[6] << 8) | dnsBytes[7];
+      if (ancount > 0) {
+        log('log-vm', '[dns]', `Resolved ${qname} (${ancount} answer${ancount > 1 ? 's' : ''})`);
+      } else {
+        log('log-vm', '[dns]', `Query for ${qname} — no answers`);
+      }
+    }
+  } catch (_) { /* best-effort logging */ }
+
+  // Build UDP response: swap ports
+  const udpLen = 8 + dnsBytes.length;
+  const udp = new Uint8Array(udpLen);
+  udp[0] = 0; udp[1] = DNS_PORT;              // src port = 53
+  udp[2] = (srcPort >> 8) & 0xFF;              // dst port = guest's src port
+  udp[3] = srcPort & 0xFF;
+  udp[4] = (udpLen >> 8) & 0xFF;               // UDP length
+  udp[5] = udpLen & 0xFF;
+  // udp[6..8] = checksum (0 = no checksum, acceptable for IPv6 DNS responses)
+  // Actually IPv6 mandates UDP checksums. Let's compute it.
+  udp.set(dnsBytes, 8);
+
+  // Build IPv6 header: swap src/dst
+  const ipv6 = new Uint8Array(40 + udpLen);
+  ipv6[0] = 0x60;                              // version 6
+  ipv6[4] = (udpLen >> 8) & 0xFF;              // payload length
+  ipv6[5] = udpLen & 0xFF;
+  ipv6[6] = UDP_NEXT_HEADER;                   // next header = UDP
+  ipv6[7] = 64;                                // hop limit
+  ipv6.set(dnsDst, 8);                         // src = where the query was sent
+  ipv6.set(guestSrc, 24);                      // dst = guest
+  ipv6.set(udp, 40);
+
+  // Compute UDP checksum over pseudo-header + UDP
+  const checksum = udpChecksum(ipv6.slice(8, 24), ipv6.slice(24, 40), udp);
+  ipv6[40 + 6] = (checksum >> 8) & 0xFF;
+  ipv6[40 + 7] = checksum & 0xFF;
+
+  return buildEthernetFrame(guestMac, gatewayMac, 0x86DD, ipv6);
+}
+
+/** Compute UDP checksum with IPv6 pseudo-header. */
+function udpChecksum(src16, dst16, udpData) {
+  let sum = 0;
+  sum = addWords(sum, src16);
+  sum = addWords(sum, dst16);
+  const pseudoLen = new Uint8Array([
+    (udpData.length >>> 24) & 0xFF,
+    (udpData.length >>> 16) & 0xFF,
+    (udpData.length >>> 8) & 0xFF,
+    udpData.length & 0xFF,
+  ]);
+  sum = addWords(sum, pseudoLen);
+  sum = addWords(sum, new Uint8Array([0, 0, 0, UDP_NEXT_HEADER]));
+  // Zero out existing checksum field for computation
+  const udpCopy = new Uint8Array(udpData);
+  udpCopy[6] = 0; udpCopy[7] = 0;
+  sum = addWords(sum, udpCopy);
+  while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+  const result = (~sum) & 0xFFFF;
+  return result === 0 ? 0xFFFF : result; // UDP checksum 0 means "no checksum", use 0xFFFF instead
+}
+
+/** Best-effort DNS name parser for logging purposes. */
+function parseDnsName(buf, offset) {
+  const labels = [];
+  let pos = offset;
+  let safety = 20;
+  while (pos < buf.length && safety-- > 0) {
+    const len = buf[pos];
+    if (len === 0) break;
+    if ((len & 0xC0) === 0xC0) {
+      // Pointer — follow it
+      const ptr = ((len & 0x3F) << 8) | buf[pos + 1];
+      return labels.join('.') + (labels.length ? '.' : '') + parseDnsName(buf, ptr);
+    }
+    pos++;
+    let label = '';
+    for (let i = 0; i < len && pos < buf.length; i++, pos++) {
+      label += String.fromCharCode(buf[pos]);
+    }
+    labels.push(label);
+  }
+  return labels.join('.');
 }
 
 function bytesEqual(a, b) {

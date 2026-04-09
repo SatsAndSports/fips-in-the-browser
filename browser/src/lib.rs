@@ -105,6 +105,9 @@ pub struct FipsNode {
     next_ping_seq: u16,
     pending_pings: HashMap<u16, u64>,
     raw_ipv6_passthrough: bool,
+    /// Gateway's ancestry from their latest TreeAnnounce.
+    /// Used to build our own TreeAnnounce as a leaf of the gateway's tree.
+    gateway_ancestry: Option<Vec<tree::AncestryEntry>>,
 }
 
 #[wasm_bindgen]
@@ -122,6 +125,7 @@ impl FipsNode {
             next_ping_seq: 1,
             pending_pings: HashMap::new(),
             raw_ipv6_passthrough: false,
+            gateway_ancestry: None,
             identity,
             link: None,
         }
@@ -139,6 +143,7 @@ impl FipsNode {
             next_ping_seq: 1,
             pending_pings: HashMap::new(),
             raw_ipv6_passthrough: false,
+            gateway_ancestry: None,
             identity,
             link: None,
         })
@@ -158,6 +163,15 @@ impl FipsNode {
     pub fn resolve_fips_name(&self, name: &str) -> Result<JsValue, JsValue> {
         let resolved = dns::resolve_fips_query(name).map_err(|e| JsValue::from_str(&e))?;
         serde_wasm_bindgen::to_value(&resolved).map_err(|e| JsValue::from_str(&format!("{e}")))
+    }
+
+    /// Handle a raw DNS query packet and return a raw DNS response.
+    ///
+    /// Used by the browser bridge to intercept UDP port 53 queries from the
+    /// VM guest and resolve `.fips` names locally without hitting the network.
+    /// Returns `None` if the query is unparseable.
+    pub fn handle_dns_query(&self, query_bytes: &[u8]) -> Option<Vec<u8>> {
+        dns::handle_dns_packet(query_bytes)
     }
 
     /// Enable or disable raw IPv6 passthrough mode.
@@ -599,13 +613,9 @@ impl FipsNode {
         now_ms: u64,
     ) -> Result<ProcessResult, JsValue> {
         match msg_type {
-            wire::MSG_TYPE_TREE_ANNOUNCE => Ok(ProcessResult {
-                msg_type: "tree_announce".to_string(),
-                responses: vec![],
-                session_peer_npub: None,
-                payload: None,
-                info: Some(format!("TreeAnnounce received ({} bytes)", payload.len())),
-            }),
+            wire::MSG_TYPE_TREE_ANNOUNCE => {
+                self.handle_gateway_tree_announce(payload)
+            }
 
             wire::MSG_TYPE_FILTER_ANNOUNCE => Ok(ProcessResult {
                 msg_type: "filter_announce".to_string(),
@@ -852,6 +862,79 @@ impl FipsNode {
     }
 
     // ========================================================================
+    // Gateway TreeAnnounce handler
+    // ========================================================================
+
+    /// Handle an incoming TreeAnnounce from the gateway.
+    ///
+    /// Parses the gateway's tree position, stores its ancestry, updates our
+    /// session coordinates, and re-announces ourselves as a leaf of the
+    /// gateway's tree. This puts us in the "same root" as the rest of the
+    /// mesh so that packets can be routed to non-gateway peers.
+    fn handle_gateway_tree_announce(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<ProcessResult, JsValue> {
+        let parsed = match tree::parse_tree_announce(payload) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(ProcessResult {
+                    msg_type: "tree_announce".to_string(),
+                    responses: vec![],
+                    session_peer_npub: None,
+                    payload: None,
+                    info: Some(format!("TreeAnnounce parse failed: {e}")),
+                });
+            }
+        };
+
+        // Store the gateway's ancestry
+        self.gateway_ancestry = Some(parsed.ancestry.clone());
+
+        // Update session coordinates: [our_addr, gateway_addr, ..., root_addr]
+        let mut coords: Vec<[u8; 16]> = Vec::with_capacity(1 + parsed.ancestry.len());
+        coords.push(*self.identity.node_addr());
+        for entry in &parsed.ancestry {
+            coords.push(entry.node_addr);
+        }
+        self.sessions.update_coords(coords);
+
+        // Build a new TreeAnnounce as a leaf of the gateway
+        let mut responses = Vec::new();
+        match self.build_tree_announce_message() {
+            Ok(pkt) => responses.push(pkt),
+            Err(e) => {
+                return Ok(ProcessResult {
+                    msg_type: "tree_announce".to_string(),
+                    responses: vec![],
+                    session_peer_npub: None,
+                    payload: None,
+                    info: Some(format!(
+                        "TreeAnnounce received but re-announce failed: {e}"
+                    )),
+                });
+            }
+        }
+
+        let root_hex = parsed
+            .ancestry
+            .last()
+            .map(|e| hex::encode(&e.node_addr[..4]))
+            .unwrap_or_else(|| "?".to_string());
+        let depth = parsed.ancestry.len();
+
+        Ok(ProcessResult {
+            msg_type: "tree_announce".to_string(),
+            responses,
+            session_peer_npub: None,
+            payload: None,
+            info: Some(format!(
+                "Adopted gateway as parent (root={root_hex}..., depth={depth}), re-announced as leaf"
+            )),
+        })
+    }
+
+    // ========================================================================
     // Message builders
     // ========================================================================
 
@@ -864,7 +947,14 @@ impl FipsNode {
 
         let node_addr = *self.identity.node_addr();
         let secret = self.identity.secret_key().clone();
-        let tree_payload = tree::build_tree_announce(&node_addr, &secret, seq)?;
+        let tree_payload = if let Some(ref ancestry) = self.gateway_ancestry {
+            // We have the gateway's ancestry — announce as a leaf
+            let parent_addr = ancestry[0].node_addr;
+            tree::build_tree_announce_as_leaf(&node_addr, &secret, seq, &parent_addr, ancestry)?
+        } else {
+            // No gateway ancestry yet — announce as root (initial state)
+            tree::build_tree_announce(&node_addr, &secret, seq)?
+        };
 
         // Increment sequence
         if let Some(LinkState::Established { tree_seq, .. }) = &mut self.link {

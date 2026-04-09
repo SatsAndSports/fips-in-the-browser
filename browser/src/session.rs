@@ -80,6 +80,14 @@ impl SessionManager {
         }
     }
 
+    /// Update our coordinates (ancestry path from self to root).
+    ///
+    /// Called when we receive the gateway's TreeAnnounce and adopt it as
+    /// parent. Future SessionSetup/Ack packets will include these coords.
+    pub fn update_coords(&mut self, coords: Vec<[u8; 16]>) {
+        self.our_coords = coords;
+    }
+
     /// Check if a session with the given dest is established.
     pub fn is_established(&self, dest: &[u8; 16]) -> bool {
         matches!(

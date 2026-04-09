@@ -121,6 +121,11 @@
     border-radius: 8px;
     padding: 0.5rem;
     background: black;
+    outline: none;
+  }
+  #screen_container.focused {
+    border-color: #facc15;
+    box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.25);
   }
   #screen_container > div {
     white-space: pre;
@@ -173,6 +178,7 @@
         <button class="btn-boot" id="btnBoot" disabled>Boot Linux VM</button>
       </div>
       <div class="status disconnected" id="vmStatus">VM not started</div>
+      <div class="info-row">Keyboard focus: <span id="vmFocusStatus">page</span></div>
     </div>
 
     <div class="panel">
@@ -207,7 +213,7 @@
   <div>
     <div class="panel">
       <div class="panel-title">VM Screen</div>
-      <div id="screen_container">
+      <div id="screen_container" tabindex="0">
         <div></div>
         <canvas style="display:none"></canvas>
       </div>
@@ -233,6 +239,7 @@ const $btnSendText = document.getElementById('btnSendText');
 const $linkStatus = document.getElementById('linkStatus');
 const $sessionStatus = document.getElementById('sessionStatus');
 const $vmStatus = document.getElementById('vmStatus');
+const $vmFocusStatus = document.getElementById('vmFocusStatus');
 const $commands = document.getElementById('commands');
 const $log = document.getElementById('log');
 const $serialLog = document.getElementById('serialLog');
@@ -253,6 +260,7 @@ let vmInitCommandsSent = false;
 let vmSessionAutoStarted = false;
 let vmInitTriggered = false;
 let sessionKeepaliveTimer = null;
+let vmFocused = false;
 
 function startSessionKeepalive() {
   if (sessionKeepaliveTimer) return;
@@ -304,6 +312,32 @@ function sleep(ms) {
 function setStatus(el, text, cls) {
   el.textContent = text;
   el.className = `status ${cls}`;
+}
+
+function setVmFocus(focused) {
+  vmFocused = focused;
+  $vmFocusStatus.textContent = focused ? 'vm' : 'page';
+  $screen.classList.toggle('focused', focused);
+  if (vm && typeof vm.keyboard_set_status === 'function') {
+    vm.keyboard_set_status(focused);
+  }
+  if (focused) {
+    $screen.focus();
+  }
+}
+
+function isVmUiTarget(target) {
+  if (!target) return false;
+  const vmRelated = [
+    $screen,
+    $pasteText,
+    $btnPasteClipboard,
+    $btnSendText,
+    $btnCopySerial,
+    $commands,
+    $serialLog,
+  ];
+  return vmRelated.some(el => el && el.contains && el.contains(target));
 }
 
 function hashParams() {
@@ -478,6 +512,7 @@ function bootVm() {
   vm.add_listener('emulator-ready', () => {
     setStatus($vmStatus, 'VM running', 'connected');
     log('log-vm', '[vm]', 'VM boot started. Click the screen and use the guest commands panel.');
+    setVmFocus(false);
     $pasteText.disabled = false;
     $btnPasteClipboard.disabled = false;
     $btnSendText.disabled = false;
@@ -504,6 +539,28 @@ function bootVm() {
 
   updateCommands();
 }
+
+$screen.addEventListener('mousedown', () => {
+  if (!vm) return;
+  setVmFocus(true);
+});
+
+document.addEventListener('mousedown', event => {
+  if (!isVmUiTarget(event.target)) {
+    setVmFocus(false);
+  }
+});
+
+$screen.addEventListener('focus', () => {
+  if (!vm) return;
+  setVmFocus(true);
+});
+
+document.addEventListener('focusin', event => {
+  if (!isVmUiTarget(event.target)) {
+    setVmFocus(false);
+  }
+});
 
 async function uploadInitScript() {
   if (!vm || vmInitScriptUploaded) return;
@@ -539,6 +596,7 @@ async function maybeRunVmInitCommands() {
   ];
 
   try {
+    setVmFocus(true);
     log('log-vm', '[vm]', 'Guest shell prompt detected; starting staged init typing.');
     for (let i = 0; i < stages.length; i++) {
       const stage = stages[i];
@@ -806,6 +864,7 @@ $btnSendText.addEventListener('click', async () => {
     return;
   }
   try {
+    setVmFocus(true);
     await vm.keyboard_send_text(text, 5);
     log('log-vm', '[vm]', `Sent ${text.length} chars to VM keyboard.`);
   } catch (e) {

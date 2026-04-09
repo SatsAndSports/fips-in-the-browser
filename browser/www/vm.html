@@ -164,6 +164,16 @@
     </div>
 
     <div class="panel">
+      <div class="panel-title">VM Paste</div>
+      <label for="pasteText">Text to send to the VM keyboard</label>
+      <input type="text" id="pasteText" placeholder="Type or paste a command..." disabled>
+      <div>
+        <button class="btn-session" id="btnPasteClipboard" disabled>Paste Clipboard</button>
+        <button class="btn-boot" id="btnSendText" disabled>Send to VM</button>
+      </div>
+    </div>
+
+    <div class="panel">
       <div class="panel-title">Guest Commands</div>
       <div class="commands" id="commands">Connect link + session first, then boot the VM to get guest setup commands.</div>
     </div>
@@ -197,6 +207,9 @@ const $gatewayIpv6 = document.getElementById('gatewayIpv6');
 const $btnConnect = document.getElementById('btnConnect');
 const $btnSession = document.getElementById('btnSession');
 const $btnBoot = document.getElementById('btnBoot');
+const $pasteText = document.getElementById('pasteText');
+const $btnPasteClipboard = document.getElementById('btnPasteClipboard');
+const $btnSendText = document.getElementById('btnSendText');
 const $linkStatus = document.getElementById('linkStatus');
 const $sessionStatus = document.getElementById('sessionStatus');
 const $vmStatus = document.getElementById('vmStatus');
@@ -389,6 +402,9 @@ function bootVm() {
   vm.add_listener('emulator-ready', () => {
     setStatus($vmStatus, 'VM running', 'connected');
     log('log-vm', '[vm]', 'VM boot started. Click the screen and use the guest commands panel.');
+    $pasteText.disabled = false;
+    $btnPasteClipboard.disabled = false;
+    $btnSendText.disabled = false;
   });
 
   vm.add_listener('net0-send', data => {
@@ -619,6 +635,34 @@ $btnConnect.addEventListener('click', () => {
 
 $btnSession.addEventListener('click', connectGatewaySession);
 $btnBoot.addEventListener('click', bootVm);
+
+$btnPasteClipboard.addEventListener('click', async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    $pasteText.value = text;
+    log('log-vm', '[vm]', `Clipboard loaded (${text.length} chars).`);
+  } catch (e) {
+    log('log-err', '[vm]', `Clipboard read failed: ${e}`);
+  }
+});
+
+$btnSendText.addEventListener('click', async () => {
+  if (!vm) {
+    log('log-err', '[vm]', 'VM is not running.');
+    return;
+  }
+  const text = $pasteText.value;
+  if (!text) {
+    log('log-err', '[vm]', 'No text to send to VM.');
+    return;
+  }
+  try {
+    await vm.keyboard_send_text(text, 5);
+    log('log-vm', '[vm]', `Sent ${text.length} chars to VM keyboard.`);
+  } catch (e) {
+    log('log-err', '[vm]', `Send-to-VM failed: ${e}`);
+  }
+});
 </script>
 </body>
 </html>

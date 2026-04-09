@@ -275,6 +275,8 @@ $btnConnect.addEventListener('click', () => {
           ? new TextDecoder().decode(new Uint8Array(result.payload))
           : '';
         log('log-chat', `← ${result.info}`);
+      } else if (result.msg_type === 'ping_request') {
+        log('log-info', `← ${result.info}`);
       } else if (result.msg_type === 'ping_reply') {
         log('log-info', `← ${result.info}`);
       } else if (result.msg_type === 'sender_report') {

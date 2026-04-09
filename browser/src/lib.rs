@@ -691,6 +691,31 @@ impl FipsNode {
                                 seq
                             ),
                         });
+                    } else if let Some((_ident, seq)) = ipv6::parse_icmpv6_echo_request(&packet) {
+                        if let Some(reply_ipv6) = ipv6::build_icmpv6_echo_reply(&packet) {
+                            if let Some(reply_compressed) = ipv6::compress_ipv6(&reply_ipv6) {
+                                if let Ok(fsp_payload) = self.sessions.send_data(
+                                    &event.from,
+                                    wire::FSP_PORT_IPV6_SHIM,
+                                    wire::FSP_PORT_IPV6_SHIM,
+                                    &reply_compressed,
+                                ) {
+                                    let datagram_inner =
+                                        self.sessions.wrap_in_datagram(&event.from, &fsp_payload);
+                                    if let Ok(pkt) = self.build_encrypted_message(&datagram_inner) {
+                                        result.responses.push(pkt);
+                                    }
+                                }
+                            }
+                        }
+
+                        result.msg_type = "ping_request".to_string();
+                        result.payload = Some(packet);
+                        result.info = Some(format!(
+                            "ICMPv6 Echo Request from {} seq={}, sent Echo Reply",
+                            ipv6::format_ipv6(&src_ipv6),
+                            seq
+                        ));
                     } else {
                         result.msg_type = "session_ipv6".to_string();
                         result.payload = Some(packet);

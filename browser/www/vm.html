@@ -186,7 +186,6 @@
       <label for="pasteText">Text to send to the VM keyboard</label>
       <input type="text" id="pasteText" placeholder="Type or paste a command..." disabled>
       <div>
-        <button class="btn-session" id="btnPasteClipboard" disabled>Paste Clipboard</button>
         <button class="btn-boot" id="btnSendText" disabled>Send to VM</button>
       </div>
     </div>
@@ -234,7 +233,6 @@ const $btnConnect = document.getElementById('btnConnect');
 const $btnSession = document.getElementById('btnSession');
 const $btnBoot = document.getElementById('btnBoot');
 const $pasteText = document.getElementById('pasteText');
-const $btnPasteClipboard = document.getElementById('btnPasteClipboard');
 const $btnSendText = document.getElementById('btnSendText');
 const $linkStatus = document.getElementById('linkStatus');
 const $sessionStatus = document.getElementById('sessionStatus');
@@ -331,7 +329,6 @@ function isVmUiTarget(target) {
   const vmRelated = [
     $screen,
     $pasteText,
-    $btnPasteClipboard,
     $btnSendText,
     $btnCopySerial,
     $commands,
@@ -514,7 +511,6 @@ function bootVm() {
     log('log-vm', '[vm]', 'VM boot started. Click the screen and use the guest commands panel.');
     setVmFocus(false);
     $pasteText.disabled = false;
-    $btnPasteClipboard.disabled = false;
     $btnSendText.disabled = false;
     uploadInitScript();
   });
@@ -833,16 +829,6 @@ $btnConnect.addEventListener('click', () => {
 
 $btnSession.addEventListener('click', connectGatewaySession);
 $btnBoot.addEventListener('click', bootVm);
-
-$btnPasteClipboard.addEventListener('click', async () => {
-  try {
-    const text = await navigator.clipboard.readText();
-    $pasteText.value = text;
-    log('log-vm', '[vm]', `Clipboard loaded (${text.length} chars).`);
-  } catch (e) {
-    log('log-err', '[vm]', `Clipboard read failed: ${e}`);
-  }
-});
 
 $btnCopySerial.addEventListener('click', async () => {
   try {

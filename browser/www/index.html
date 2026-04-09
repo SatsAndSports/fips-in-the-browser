@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FIPS Browser Node</title>
+<link rel="icon" href="data:,">
 <style>
   :root {
     --bg: #1a1a2e;
@@ -290,9 +291,9 @@ function connectLink() {
         log('log-info', '[ping]', `← ${result.info}`);
       } else if (result.msg_type === 'ping_reply') {
         log('log-info', '[ping]', `← ${result.info}`);
-      } else if (result.msg_type === 'sender_report') {
+      } else if (result.msg_type === 'sender_report' || result.msg_type === 'session_sender_report') {
         // Don't log every sender report — too noisy
-      } else if (result.msg_type === 'heartbeat' || result.msg_type === 'receiver_report') {
+      } else if (result.msg_type === 'heartbeat' || result.msg_type === 'receiver_report' || result.msg_type === 'session_receiver_report') {
         // Silent
       } else if (result.msg_type === 'tree_announce' || result.msg_type === 'filter_announce') {
         // Log briefly

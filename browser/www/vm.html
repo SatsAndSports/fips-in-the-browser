@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FIPS Browser VM</title>
+<link rel="icon" href="data:,">
 <script src="v86/build/libv86.js"></script>
 <style>
   :root {
@@ -390,7 +391,9 @@ function connectLink() {
         if (result.info) log('log-vm', '[vm]', `← ${result.info}`);
       } else if (result.msg_type === 'tree_announce' || result.msg_type === 'filter_announce') {
         // Quiet mesh noise
-      } else if (result.msg_type === 'sender_report' || result.msg_type === 'heartbeat' || result.msg_type === 'receiver_report') {
+      } else if (result.msg_type === 'sender_report' || result.msg_type === 'session_sender_report') {
+        // Quiet mesh noise
+      } else if (result.msg_type === 'heartbeat' || result.msg_type === 'receiver_report' || result.msg_type === 'session_receiver_report') {
         // Silent maintenance traffic
       } else if (result.info) {
         log('log-link', '[misc]', `← [${result.msg_type}] ${result.info}`);

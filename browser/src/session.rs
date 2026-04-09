@@ -7,6 +7,7 @@
 
 use crate::cipher::CipherState;
 use crate::identity;
+use crate::mmp::ReceiverState;
 use crate::noise_xk::HandshakeXK;
 use crate::replay::ReplayWindow;
 use crate::wire;
@@ -29,6 +30,8 @@ enum SessionState {
         send_cipher: CipherState,
         recv_cipher: CipherState,
         replay: ReplayWindow,
+        /// MMP receiver state for session-layer metrics.
+        receiver_state: ReceiverState,
     },
 }
 
@@ -42,6 +45,17 @@ pub struct SessionManager {
 }
 
 /// Result of processing an incoming SessionDatagram.
+pub enum SessionEventKind {
+    Setup,
+    Ack,
+    Msg3,
+    SenderReport,
+    ReceiverReport,
+    Data,
+    Other(u8),
+    Replay,
+}
+
 pub struct SessionEvent {
     /// FMP wire packets to send back (already link-encrypted by the caller).
     pub fsp_responses: Vec<Vec<u8>>,
@@ -53,6 +67,8 @@ pub struct SessionEvent {
     pub payload: Option<(u16, Vec<u8>)>, // (dst_port, data)
     /// The source NodeAddr (who sent this).
     pub from: [u8; 16],
+    /// What kind of session event occurred.
+    pub kind: SessionEventKind,
 }
 
 impl SessionManager {
@@ -179,6 +195,7 @@ impl SessionManager {
             remote_npub: None,
             payload: None,
             from: src_addr,
+            kind: SessionEventKind::Setup,
         })
     }
 
@@ -210,6 +227,7 @@ impl SessionManager {
                         send_cipher,
                         recv_cipher,
                         replay: ReplayWindow::new(),
+                        receiver_state: ReceiverState::new(),
                     },
                 );
 
@@ -219,6 +237,7 @@ impl SessionManager {
                     remote_npub: Some(remote_npub),
                     payload: None,
                     from: src_addr,
+                    kind: SessionEventKind::Ack,
                 })
             }
             other => {
@@ -249,6 +268,7 @@ impl SessionManager {
                         send_cipher,
                         recv_cipher,
                         replay: ReplayWindow::new(),
+                        receiver_state: ReceiverState::new(),
                     },
                 );
 
@@ -258,6 +278,7 @@ impl SessionManager {
                     remote_npub: Some(remote_npub),
                     payload: None,
                     from: src_addr,
+                    kind: SessionEventKind::Msg3,
                 })
             }
             other => {
@@ -303,6 +324,7 @@ impl SessionManager {
             SessionState::Established {
                 recv_cipher,
                 replay,
+                receiver_state,
                 ..
             } => {
                 if !replay.check(counter) {
@@ -312,6 +334,7 @@ impl SessionManager {
                         remote_npub: None,
                         payload: None,
                         from: src_addr,
+                        kind: SessionEventKind::Replay,
                     });
                 }
 
@@ -325,7 +348,17 @@ impl SessionManager {
                 if plaintext.len() < wire::FSP_INNER_HEADER_SIZE {
                     return Err("FSP inner header too short".into());
                 }
+                let timestamp =
+                    u32::from_le_bytes([plaintext[0], plaintext[1], plaintext[2], plaintext[3]]);
                 let msg_type = plaintext[4];
+
+                // Record frame in MMP receiver state
+                receiver_state.record_frame(
+                    counter,
+                    timestamp,
+                    fsp_payload.len(),
+                    wire::current_time_ms(),
+                );
 
                 if msg_type == wire::FSP_MSG_TYPE_DATA {
                     // DataPacket: [inner_header:6][src_port:2][dst_port:2][payload...]
@@ -351,9 +384,28 @@ impl SessionManager {
                         remote_npub: None,
                         payload: Some((dst_port, data)),
                         from: src_addr,
+                        kind: SessionEventKind::Data,
+                    })
+                } else if msg_type == wire::MSG_TYPE_SENDER_REPORT {
+                    Ok(SessionEvent {
+                        fsp_responses: vec![],
+                        info: "Session SenderReport received".to_string(),
+                        remote_npub: None,
+                        payload: None,
+                        from: src_addr,
+                        kind: SessionEventKind::SenderReport,
+                    })
+                } else if msg_type == wire::MSG_TYPE_RECEIVER_REPORT {
+                    Ok(SessionEvent {
+                        fsp_responses: vec![],
+                        info: "Session ReceiverReport received".to_string(),
+                        remote_npub: None,
+                        payload: None,
+                        from: src_addr,
+                        kind: SessionEventKind::ReceiverReport,
                     })
                 } else {
-                    // Other FSP message types (MMP, coords warmup, etc.) — log
+                    // Other FSP message types (MMP ReceiverReport, coords warmup, etc.) — log
                     Ok(SessionEvent {
                         fsp_responses: vec![],
                         info: format!(
@@ -363,6 +415,7 @@ impl SessionManager {
                         remote_npub: None,
                         payload: None,
                         from: src_addr,
+                        kind: SessionEventKind::Other(msg_type),
                     })
                 }
             }
@@ -418,6 +471,63 @@ impl SessionManager {
             }
             _ => Err("session not established".into()),
         }
+    }
+
+    /// Build an encrypted FSP message for an established session.
+    ///
+    /// `inner_payload` starts with the msg_type byte (e.g., 0x12 for ReceiverReport).
+    pub fn build_encrypted_session_message(
+        &mut self,
+        dest_addr: &[u8; 16],
+        inner_payload: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let state = self
+            .sessions
+            .get_mut(dest_addr)
+            .ok_or("no established session for this destination")?;
+
+        match state {
+            SessionState::Established { send_cipher, .. } => {
+                let timestamp = wire::current_timestamp_ms();
+                // Build inner: [timestamp:4 LE][msg_type + payload...]
+                let mut inner = Vec::with_capacity(4 + inner_payload.len());
+                inner.extend_from_slice(&timestamp.to_le_bytes());
+                inner.extend_from_slice(inner_payload);
+
+                let counter = send_cipher.nonce();
+                let payload_len = inner.len() as u16;
+                let header = wire::build_fsp_header(0, payload_len, counter);
+
+                // Encrypt
+                let ciphertext = send_cipher.encrypt_with_aad(&inner, &header)?;
+
+                // Assemble: header(12) + ciphertext+tag
+                let mut out = Vec::with_capacity(wire::FSP_HEADER_SIZE + ciphertext.len());
+                out.extend_from_slice(&header);
+                out.extend_from_slice(&ciphertext);
+                Ok(out)
+            }
+            _ => Err("session not established".into()),
+        }
+    }
+
+    /// Build an encrypted session-layer ReceiverReport.
+    pub fn build_session_receiver_report(
+        &mut self,
+        dest_addr: &[u8; 16],
+        now_ms: u64,
+    ) -> Result<Vec<u8>, String> {
+        let state = self
+            .sessions
+            .get_mut(dest_addr)
+            .ok_or("no session for this destination")?;
+
+        let report_payload = match state {
+            SessionState::Established { receiver_state, .. } => receiver_state.build_report(now_ms),
+            _ => return Err("session not established".into()),
+        };
+
+        self.build_encrypted_session_message(dest_addr, &report_payload)
     }
 
     /// Wrap an FSP payload in a SessionDatagram (link-layer msg_type 0x00 envelope).

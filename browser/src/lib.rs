@@ -24,6 +24,7 @@ use mmp::ReceiverState;
 use noise::HandshakeState;
 use replay::ReplayWindow;
 use serde::Serialize;
+use session::SessionEventKind;
 use session::SessionManager;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
@@ -717,6 +718,26 @@ impl FipsNode {
             payload: None,
             info: Some(event.info),
         };
+
+        // Handle session-layer MMP reports
+        if matches!(event.kind, SessionEventKind::SenderReport) {
+            let now_ms = current_time_ms();
+            match self
+                .sessions
+                .build_session_receiver_report(&src_addr, now_ms)
+            {
+                Ok(fsp_resp) => {
+                    let datagram_inner = self.sessions.wrap_in_datagram(&src_addr, &fsp_resp);
+                    if let Ok(pkt) = self.build_encrypted_message(&datagram_inner) {
+                        result.responses.push(pkt);
+                    }
+                }
+                Err(_) => {}
+            }
+            result.msg_type = "session_sender_report".to_string();
+        } else if matches!(event.kind, SessionEventKind::ReceiverReport) {
+            result.msg_type = "session_receiver_report".to_string();
+        }
 
         // If there's application data, include it
         if let Some((port, data)) = event.payload {

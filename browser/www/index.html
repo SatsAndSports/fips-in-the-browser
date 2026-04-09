@@ -186,47 +186,13 @@ let node = null;
 let ws = null;
 let sessionDest = null; // npub of the session peer
 
-function utcTime() {
-  return new Date().toISOString().slice(11);
-}
-
-function log(cls, prefix, text) {
-  const span = document.createElement('span');
-  span.className = cls;
-  span.textContent = `${utcTime()} ${prefix} ${text}\n`;
-  $log.appendChild(span);
-  $log.scrollTop = $log.scrollHeight;
-}
-
-function setStatus(text, cls) {
-  $status.textContent = text;
-  $status.className = 'status ' + cls;
-}
-
-function setSessionStatus(text, cls) {
-  $sessionStatus.textContent = text;
-  $sessionStatus.className = 'status ' + cls;
-}
-
-// ── Initialize WASM ───────────────────────────────────
-
-await init();
-
-node = new FipsNode();
-$myNpub.textContent = node.npub();
-$myAddr.textContent = node.node_addr_hex();
-$btnConnect.disabled = false;
-setStatus('Ready', 'disconnected');
-log('log-info', '[init]', `WASM loaded. Browser FIPS node initialized.`);
-log('log-info', '[init]', `npub: ${node.npub()}`);
-log('log-info', '[init]', `addr: ${node.node_addr_hex()}`);
-
-// ── 1. Link Connect ──────────────────────────────────
-
-$btnConnect.addEventListener('click', () => {
+function connectLink() {
   const url = $url.value.trim();
   const remoteNpub = $remoteNpub.value.trim();
-  if (!url || !remoteNpub) { log('log-err', '[link]', 'URL and gateway npub are required.'); return; }
+  if (!url || !remoteNpub) {
+    log('log-err', '[link]', 'URL and gateway npub are required.');
+    return;
+  }
 
   $btnConnect.disabled = true;
   setStatus('Connecting...', 'connecting');
@@ -275,9 +241,6 @@ $btnConnect.addEventListener('click', () => {
           $btnSession.disabled = true;
         }
       } else if (result.msg_type === 'session_chat') {
-        const text = result.payload
-          ? new TextDecoder().decode(new Uint8Array(result.payload))
-          : '';
         log('log-chat', '[chat]', `← ${result.info}`);
       } else if (result.msg_type === 'ping_request') {
         log('log-info', '[ping]', `← ${result.info}`);
@@ -324,7 +287,59 @@ $btnConnect.addEventListener('click', () => {
     setStatus('Disconnected', 'disconnected');
     $btnConnect.disabled = false;
   };
-});
+}
+
+function utcTime() {
+  return new Date().toISOString().slice(11);
+}
+
+function log(cls, prefix, text) {
+  const span = document.createElement('span');
+  span.className = cls;
+  span.textContent = `${utcTime()} ${prefix} ${text}\n`;
+  $log.appendChild(span);
+  $log.scrollTop = $log.scrollHeight;
+}
+
+function setStatus(text, cls) {
+  $status.textContent = text;
+  $status.className = 'status ' + cls;
+}
+
+function setSessionStatus(text, cls) {
+  $sessionStatus.textContent = text;
+  $sessionStatus.className = 'status ' + cls;
+}
+
+// ── Initialize WASM ───────────────────────────────────
+
+await init();
+
+// Auto-fill gateway settings from URL fragment:
+//   #url=ws%3A%2F%2Flocalhost%3A8080&gateway=npub1...
+const hashParams = new URLSearchParams(window.location.hash.slice(1));
+const hashUrl = hashParams.get('url');
+const hashGateway = hashParams.get('gateway');
+if (hashUrl) $url.value = hashUrl;
+if (hashGateway) $remoteNpub.value = hashGateway;
+
+node = new FipsNode();
+$myNpub.textContent = node.npub();
+$myAddr.textContent = node.node_addr_hex();
+$btnConnect.disabled = false;
+setStatus('Ready', 'disconnected');
+log('log-info', '[init]', `WASM loaded. Browser FIPS node initialized.`);
+log('log-info', '[init]', `npub: ${node.npub()}`);
+log('log-info', '[init]', `addr: ${node.node_addr_hex()}`);
+
+if ($url.value.trim() && $remoteNpub.value.trim()) {
+  log('log-info', '[link]', 'Gateway settings loaded from URL fragment; auto-connecting.');
+  connectLink();
+}
+
+// ── 1. Link Connect ──────────────────────────────────
+
+$btnConnect.addEventListener('click', connectLink);
 
 // ── 2. Session Connect ───────────────────────────────
 

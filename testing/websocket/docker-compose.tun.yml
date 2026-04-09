@@ -1,0 +1,17 @@
+services:
+  fips-ws-tun:
+    image: fips-test:latest
+    container_name: fips-ws-tun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "0"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./node-a-tun-container.yaml:/etc/fips/fips.yaml:ro
+    entrypoint: ["/usr/local/bin/fips"]
+    command: ["--config", "/etc/fips/fips.yaml"]
+    restart: "no"

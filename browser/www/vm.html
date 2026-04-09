@@ -251,6 +251,33 @@ let vmInitScriptUploaded = false;
 let vmInitCommandsSent = false;
 let vmSessionAutoStarted = false;
 let vmInitTriggered = false;
+let sessionKeepaliveTimer = null;
+
+function startSessionKeepalive() {
+  if (sessionKeepaliveTimer) return;
+  sessionKeepaliveTimer = setInterval(() => {
+    if (
+      ws &&
+      ws.readyState === WebSocket.OPEN &&
+      sessionDest &&
+      node.is_session_established(sessionDest)
+    ) {
+      try {
+        const pkt = node.send_keepalive(sessionDest);
+        ws.send(pkt);
+      } catch (e) {
+        console.warn('Session keepalive failed:', e);
+      }
+    }
+  }, 20000); // 20 seconds
+}
+
+function stopSessionKeepalive() {
+  if (sessionKeepaliveTimer) {
+    clearInterval(sessionKeepaliveTimer);
+    sessionKeepaliveTimer = null;
+  }
+}
 
 function utcTime() {
   return new Date().toISOString().slice(11);
@@ -352,6 +379,7 @@ function connectLink() {
         if (sessionDest && node.is_session_established(sessionDest)) {
           setStatus($sessionStatus, 'Session Established', 'connected');
           $btnBoot.disabled = false;
+          startSessionKeepalive();
           if (!vm) {
             bootVm();
           }
@@ -382,6 +410,7 @@ function connectLink() {
     log('log-info', '[link]', 'WebSocket closed.');
     setStatus($linkStatus, 'Disconnected', 'disconnected');
     setStatus($sessionStatus, 'No session', 'disconnected');
+    stopSessionKeepalive();
     $btnConnect.disabled = false;
     $btnSession.disabled = true;
     $btnBoot.disabled = true;

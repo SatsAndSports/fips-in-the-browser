@@ -357,6 +357,23 @@ impl FipsNode {
             .map_err(|e| JsValue::from_str(&e))
     }
 
+    /// Send an empty data packet to port 0 as a session-layer keepalive.
+    pub fn send_keepalive(&mut self, dest_npub: &str) -> Result<Vec<u8>, JsValue> {
+        let x_only = identity::decode_npub(dest_npub).map_err(|e| JsValue::from_str(&e))?;
+        let dest_addr = identity::node_addr_from_x_only(&x_only);
+
+        // Send empty data packet to port 0. Server will touch() session activity
+        // upon successful decryption, even if port 0 is unknown.
+        let fsp_payload = self
+            .sessions
+            .send_data(&dest_addr, 0, 0, &[])
+            .map_err(|e| JsValue::from_str(&e))?;
+
+        let datagram_inner = self.sessions.wrap_in_datagram(&dest_addr, &fsp_payload);
+        self.build_encrypted_message(&datagram_inner)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
     /// Check if a session is established with a given npub.
     pub fn is_session_established(&self, dest_npub: &str) -> bool {
         if let Ok(x_only) = identity::decode_npub(dest_npub) {

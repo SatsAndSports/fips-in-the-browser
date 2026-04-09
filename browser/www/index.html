@@ -201,6 +201,33 @@ const $log           = document.getElementById('log');
 let node = null;
 let ws = null;
 let sessionDest = null; // npub of the session peer
+let sessionKeepaliveTimer = null;
+
+function startSessionKeepalive() {
+  if (sessionKeepaliveTimer) return;
+  sessionKeepaliveTimer = setInterval(() => {
+    if (
+      ws &&
+      ws.readyState === WebSocket.OPEN &&
+      sessionDest &&
+      node.is_session_established(sessionDest)
+    ) {
+      try {
+        const pkt = node.send_keepalive(sessionDest);
+        ws.send(pkt);
+      } catch (e) {
+        console.warn('Session keepalive failed:', e);
+      }
+    }
+  }, 20000); // 20 seconds
+}
+
+function stopSessionKeepalive() {
+  if (sessionKeepaliveTimer) {
+    clearInterval(sessionKeepaliveTimer);
+    sessionKeepaliveTimer = null;
+  }
+}
 
 function connectLink() {
   const url = $url.value.trim();
@@ -255,6 +282,7 @@ function connectLink() {
           $msg.disabled = false;
           $btnSend.disabled = false;
           $btnSession.disabled = true;
+          startSessionKeepalive();
         }
       } else if (result.msg_type === 'session_chat') {
         log('log-chat', '[chat]', `← ${result.info}`);
@@ -289,6 +317,7 @@ function connectLink() {
   ws.onclose = () => {
     log('log-info', '[link]', 'WebSocket closed.');
     setStatus('Disconnected', 'disconnected');
+    stopSessionKeepalive();
     $btnConnect.disabled = false;
     $sessionNpub.disabled = true;
     $btnSession.disabled = true;

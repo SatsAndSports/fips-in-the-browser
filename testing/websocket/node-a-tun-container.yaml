@@ -4,10 +4,11 @@
 #
 # Exposes:
 #   - WebSocket server on 0.0.0.0:8080 (publish to host with -p 8080:8080)
+# Uses outbound UDP to peer with the external VPS node at 217.77.8.91:2121.
 # Uses:
 #   - TUN interface fips0 with MTU 1280
 #
-# No DNS, no UDP transport, no extra peers.
+# No DNS. Includes UDP transport for peering with the broader FIPS network.
 
 node:
   identity:
@@ -24,5 +25,16 @@ dns:
   enabled: false
 
 transports:
+  udp:
+    bind_addr: "0.0.0.0:2121"
+    mtu: 1472
   websocket:
     bind_addr: "0.0.0.0:8080"
+
+peers:
+  - npub: "npub1qmc3cvfz0yu2hx96nq3gp55zdan2qclealn7xshgr448d3nh6lks7zel98"
+    alias: "node-vps"
+    addresses:
+      - transport: udp
+        addr: "217.77.8.91:2121"
+    connect_policy: auto_connect

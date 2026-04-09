@@ -186,10 +186,14 @@ let node = null;
 let ws = null;
 let sessionDest = null; // npub of the session peer
 
-function log(cls, text) {
+function utcTime() {
+  return new Date().toISOString().slice(11);
+}
+
+function log(cls, prefix, text) {
   const span = document.createElement('span');
   span.className = cls;
-  span.textContent = text + '\n';
+  span.textContent = `${utcTime()} ${prefix} ${text}\n`;
   $log.appendChild(span);
   $log.scrollTop = $log.scrollHeight;
 }
@@ -213,34 +217,34 @@ $myNpub.textContent = node.npub();
 $myAddr.textContent = node.node_addr_hex();
 $btnConnect.disabled = false;
 setStatus('Ready', 'disconnected');
-log('log-info', `WASM loaded. Browser FIPS node initialized.`);
-log('log-info', `npub: ${node.npub()}`);
-log('log-info', `addr: ${node.node_addr_hex()}`);
+log('log-info', '[init]', `WASM loaded. Browser FIPS node initialized.`);
+log('log-info', '[init]', `npub: ${node.npub()}`);
+log('log-info', '[init]', `addr: ${node.node_addr_hex()}`);
 
 // ── 1. Link Connect ──────────────────────────────────
 
 $btnConnect.addEventListener('click', () => {
   const url = $url.value.trim();
   const remoteNpub = $remoteNpub.value.trim();
-  if (!url || !remoteNpub) { log('log-err', 'URL and gateway npub are required.'); return; }
+  if (!url || !remoteNpub) { log('log-err', '[link]', 'URL and gateway npub are required.'); return; }
 
   $btnConnect.disabled = true;
   setStatus('Connecting...', 'connecting');
-  log('log-info', `Connecting to ${url}...`);
+  log('log-info', '[link]', `Connecting to ${url}...`);
 
   ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
-    log('log-info', 'WebSocket connected.');
+    log('log-info', '[link]', 'WebSocket connected.');
     setStatus('Handshaking...', 'handshaking');
-    log('log-hs', `Initiating Noise IK handshake with ${remoteNpub.slice(0,12)}...`);
+    log('log-hs', '[link]', `Initiating Noise IK handshake with ${remoteNpub.slice(0,12)}...`);
     try {
       const msg1 = node.initiate_handshake(remoteNpub);
-      log('log-hs', `Sent IK msg1 (${msg1.length} bytes)`);
+      log('log-hs', '[link]', `Sent IK msg1 (${msg1.length} bytes)`);
       ws.send(msg1);
     } catch (e) {
-      log('log-err', `Handshake failed: ${e}`);
+      log('log-err', '[link]', `Handshake failed: ${e}`);
       setStatus('Disconnected', 'disconnected');
       $btnConnect.disabled = false;
     }
@@ -253,12 +257,12 @@ $btnConnect.addEventListener('click', () => {
 
       // Dispatch by msg_type
       if (result.msg_type === 'msg2') {
-        log('log-hs', `← ${result.info}`);
+        log('log-hs', '[link]', `← ${result.info}`);
         setStatus('Link Established', 'connected');
         $sessionNpub.disabled = false;
         $btnSession.disabled = false;
       } else if (result.msg_type === 'session') {
-        log('log-hs', `← ${result.info}`);
+        log('log-hs', '[sess]', `← ${result.info}`);
         if (result.session_peer_npub) {
           sessionDest = result.session_peer_npub;
           $sessionNpub.value = sessionDest;
@@ -274,22 +278,22 @@ $btnConnect.addEventListener('click', () => {
         const text = result.payload
           ? new TextDecoder().decode(new Uint8Array(result.payload))
           : '';
-        log('log-chat', `← ${result.info}`);
+        log('log-chat', '[chat]', `← ${result.info}`);
       } else if (result.msg_type === 'ping_request') {
-        log('log-info', `← ${result.info}`);
+        log('log-info', '[ping]', `← ${result.info}`);
       } else if (result.msg_type === 'ping_reply') {
-        log('log-info', `← ${result.info}`);
+        log('log-info', '[ping]', `← ${result.info}`);
       } else if (result.msg_type === 'sender_report') {
         // Don't log every sender report — too noisy
       } else if (result.msg_type === 'heartbeat' || result.msg_type === 'receiver_report') {
         // Silent
       } else if (result.msg_type === 'tree_announce' || result.msg_type === 'filter_announce') {
         // Log briefly
-        log('log-info', `← ${result.info}`);
+        log('log-info', '[mesh]', `← ${result.info}`);
       } else if (result.msg_type === 'replay') {
-        log('log-err', `Replay: ${result.info}`);
+        log('log-err', '[link]', `Replay: ${result.info}`);
       } else {
-        if (result.info) log('log-info', `← [${result.msg_type}] ${result.info}`);
+        if (result.info) log('log-info', '[misc]', `← [${result.msg_type}] ${result.info}`);
       }
 
       // Send any responses
@@ -299,12 +303,12 @@ $btnConnect.addEventListener('click', () => {
         }
       }
     } catch (e) {
-      log('log-err', `Processing error: ${e}`);
+      log('log-err', '[proc]', `Processing error: ${e}`);
     }
   };
 
   ws.onclose = () => {
-    log('log-info', 'WebSocket closed.');
+    log('log-info', '[link]', 'WebSocket closed.');
     setStatus('Disconnected', 'disconnected');
     $btnConnect.disabled = false;
     $sessionNpub.disabled = true;
@@ -316,7 +320,7 @@ $btnConnect.addEventListener('click', () => {
   };
 
   ws.onerror = () => {
-    log('log-err', 'WebSocket error.');
+    log('log-err', '[link]', 'WebSocket error.');
     setStatus('Disconnected', 'disconnected');
     $btnConnect.disabled = false;
   };
@@ -326,7 +330,7 @@ $btnConnect.addEventListener('click', () => {
 
 $btnSession.addEventListener('click', () => {
   const destNpub = $sessionNpub.value.trim();
-  if (!destNpub) { log('log-err', 'Remote npub is required.'); return; }
+  if (!destNpub) { log('log-err', '[sess]', 'Remote npub is required.'); return; }
 
   if (node.is_session_established(destNpub)) {
     sessionDest = destNpub;
@@ -335,18 +339,18 @@ $btnSession.addEventListener('click', () => {
     $msg.disabled = false;
     $btnSend.disabled = false;
     $btnSession.disabled = true;
-    log('log-info', 'Session already established. Ready to chat.');
+    log('log-info', '[sess]', 'Session already established. Ready to chat.');
     return;
   }
 
   sessionDest = destNpub;
   setSessionStatus('Initiating XK handshake...', 'handshaking');
-  log('log-hs', `Initiating Noise XK session with ${destNpub.slice(0,12)}...`);
+  log('log-hs', '[sess]', `Initiating Noise XK session with ${destNpub.slice(0,12)}...`);
 
   try {
     const pkt = node.connect_session(destNpub);
     ws.send(pkt);
-    log('log-hs', `Sent SessionSetup (XK msg1, ${pkt.length} bytes on wire)`);
+    log('log-hs', '[sess]', `Sent SessionSetup (XK msg1, ${pkt.length} bytes on wire)`);
     $btnSession.disabled = true;
   } catch (e) {
     if (String(e).includes('already established')) {
@@ -355,9 +359,9 @@ $btnSession.addEventListener('click', () => {
       $msg.disabled = false;
       $btnSend.disabled = false;
       $btnSession.disabled = true;
-      log('log-info', 'Session already established. Ready to chat.');
+      log('log-info', '[sess]', 'Session already established. Ready to chat.');
     } else {
-      log('log-err', `Session initiation failed: ${e}`);
+      log('log-err', '[sess]', `Session initiation failed: ${e}`);
       setSessionStatus('Failed', 'disconnected');
     }
   }
@@ -372,10 +376,10 @@ function sendChat() {
   try {
     const pkt = node.send_message(sessionDest, text);
     ws.send(pkt);
-    log('log-send', `→ ${text}`);
+    log('log-send', '[chat]', `→ ${text}`);
     $msg.value = '';
   } catch (e) {
-    log('log-err', `Send error: ${e}`);
+    log('log-err', '[chat]', `Send error: ${e}`);
   }
 }
 
@@ -385,9 +389,9 @@ function sendPing() {
   try {
     const pkt = node.send_ping(sessionDest);
     ws.send(pkt);
-    log('log-send', `→ ICMPv6 Echo Request`);
+    log('log-send', '[ping]', `→ ICMPv6 Echo Request`);
   } catch (e) {
-    log('log-err', `Ping error: ${e}`);
+    log('log-err', '[ping]', `Ping error: ${e}`);
   }
 }
 

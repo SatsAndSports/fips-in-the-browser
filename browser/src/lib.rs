@@ -7,6 +7,7 @@
 
 mod bloom;
 mod cipher;
+mod dns;
 mod identity;
 mod ipv6;
 mod mmp;
@@ -147,6 +148,12 @@ impl FipsNode {
     /// Get this node's hex node address.
     pub fn node_addr_hex(&self) -> String {
         self.identity.node_addr_hex()
+    }
+
+    /// Resolve a direct `<npub>.fips` name locally.
+    pub fn resolve_fips_name(&self, name: &str) -> Result<JsValue, JsValue> {
+        let resolved = dns::resolve_fips_query(name).map_err(|e| JsValue::from_str(&e))?;
+        serde_wasm_bindgen::to_value(&resolved).map_err(|e| JsValue::from_str(&format!("{e}")))
     }
 
     /// Initiate a Noise IK handshake with a remote peer.

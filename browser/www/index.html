@@ -123,6 +123,18 @@
   <div class="info-row">addr: <span id="myAddr"></span></div>
 </div>
 
+<!-- Resolver panel -->
+<div class="panel">
+  <div class="panel-title">Resolver</div>
+  <label for="resolveName">Resolve direct <code>npub.fips</code> name</label>
+  <input type="text" id="resolveName" placeholder="npub1....fips">
+  <div>
+    <button class="btn-session" id="btnResolve">Resolve</button>
+  </div>
+  <div class="info-row">IPv6: <span id="resolveIpv6">-</span></div>
+  <div class="info-row">NodeAddr: <span id="resolveNodeAddr">-</span></div>
+</div>
+
 <!-- Link connection panel -->
 <div class="panel">
   <div class="panel-title">1. Connect to Gateway Node (Noise IK link)</div>
@@ -170,6 +182,10 @@ import init, { FipsNode } from '../pkg/fips_wasm.js';
 
 const $myNpub        = document.getElementById('myNpub');
 const $myAddr        = document.getElementById('myAddr');
+const $resolveName   = document.getElementById('resolveName');
+const $btnResolve    = document.getElementById('btnResolve');
+const $resolveIpv6   = document.getElementById('resolveIpv6');
+const $resolveNodeAddr = document.getElementById('resolveNodeAddr');
 const $url           = document.getElementById('url');
 const $remoteNpub    = document.getElementById('remoteNpub');
 const $btnConnect    = document.getElementById('btnConnect');
@@ -331,6 +347,24 @@ setStatus('Ready', 'disconnected');
 log('log-info', '[init]', `WASM loaded. Browser FIPS node initialized.`);
 log('log-info', '[init]', `npub: ${node.npub()}`);
 log('log-info', '[init]', `addr: ${node.node_addr_hex()}`);
+
+$btnResolve.addEventListener('click', () => {
+  const name = $resolveName.value.trim();
+  if (!name) {
+    log('log-err', '[dns]', 'Resolver input is required.');
+    return;
+  }
+  try {
+    const resolved = node.resolve_fips_name(name);
+    $resolveIpv6.textContent = resolved.ipv6;
+    $resolveNodeAddr.textContent = resolved.node_addr_hex;
+    log('log-info', '[dns]', `${resolved.name} -> ${resolved.ipv6}`);
+  } catch (e) {
+    $resolveIpv6.textContent = '-';
+    $resolveNodeAddr.textContent = '-';
+    log('log-err', '[dns]', `Resolve failed: ${e}`);
+  }
+});
 
 if ($url.value.trim() && $remoteNpub.value.trim()) {
   log('log-info', '[link]', 'Gateway settings loaded from URL fragment; auto-connecting.');

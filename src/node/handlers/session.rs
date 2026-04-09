@@ -285,13 +285,32 @@ impl Node {
                         let src_ipv6 = FipsAddress::from_node_addr(src_addr).to_ipv6().octets();
                         let dst_ipv6 = FipsAddress::from_node_addr(self.node_addr()).to_ipv6().octets();
 
+                        debug!(
+                            src = %self.peer_display_name(src_addr),
+                            dst = %self.node_addr(),
+                            compressed_len = service_payload.len(),
+                            "Received IPv6 shim session payload"
+                        );
+
                         match crate::upper::ipv6_shim::decompress_ipv6(service_payload, src_ipv6, dst_ipv6) {
                             Some(mut packet) => {
+                                debug!(
+                                    src_ipv6 = %std::net::Ipv6Addr::from(src_ipv6),
+                                    dst_ipv6 = %std::net::Ipv6Addr::from(dst_ipv6),
+                                    packet_len = packet.len(),
+                                    "IPv6 shim packet decompressed"
+                                );
                                 if ce_flag {
                                     mark_ipv6_ecn_ce(&mut packet);
                                     self.stats_mut().congestion.record_ce_received();
                                 }
                                 if let Some(tun_tx) = &self.tun_tx {
+                                    debug!(
+                                        src_ipv6 = %std::net::Ipv6Addr::from(src_ipv6),
+                                        dst_ipv6 = %std::net::Ipv6Addr::from(dst_ipv6),
+                                        packet_len = packet.len(),
+                                        "Delivering decompressed IPv6 packet to TUN"
+                                    );
                                     if let Err(e) = tun_tx.send(packet) {
                                         debug!(error = %e, "Failed to deliver decompressed IPv6 packet to TUN");
                                     }

@@ -8,6 +8,7 @@
 mod bloom;
 mod cipher;
 mod identity;
+mod ipv6;
 mod mmp;
 mod noise;
 mod noise_xk;
@@ -23,6 +24,7 @@ use noise::HandshakeState;
 use replay::ReplayWindow;
 use serde::Serialize;
 use session::SessionManager;
+use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use wire::current_time_ms;
 
@@ -98,6 +100,8 @@ pub struct FipsNode {
     sessions: SessionManager,
     /// Random epoch for session handshakes.
     session_epoch: [u8; 8],
+    next_ping_seq: u16,
+    pending_pings: HashMap<u16, u64>,
 }
 
 #[wasm_bindgen]
@@ -112,6 +116,8 @@ impl FipsNode {
         Self {
             sessions: SessionManager::new(node_addr),
             session_epoch: epoch,
+            next_ping_seq: 1,
+            pending_pings: HashMap::new(),
             identity,
             link: None,
         }
@@ -126,6 +132,8 @@ impl FipsNode {
         Ok(Self {
             sessions: SessionManager::new(node_addr),
             session_epoch: epoch,
+            next_ping_seq: 1,
+            pending_pings: HashMap::new(),
             identity,
             link: None,
         })
@@ -257,6 +265,37 @@ impl FipsNode {
         let datagram_inner = self.sessions.wrap_in_datagram(&dest_addr, &fsp_payload);
 
         // Link-encrypt
+        self.build_encrypted_message(&datagram_inner)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Send an ICMPv6 Echo Request through an established session.
+    pub fn send_ping(&mut self, dest_npub: &str) -> Result<Vec<u8>, JsValue> {
+        let x_only = identity::decode_npub(dest_npub).map_err(|e| JsValue::from_str(&e))?;
+        let dest_addr = identity::node_addr_from_x_only(&x_only);
+
+        let src_ipv6 = ipv6::ipv6_from_node_addr(self.identity.node_addr());
+        let dst_ipv6 = ipv6::ipv6_from_node_addr(&dest_addr);
+
+        let seq = self.next_ping_seq;
+        self.next_ping_seq = self.next_ping_seq.wrapping_add(1);
+        self.pending_pings.insert(seq, current_time_ms());
+
+        let ipv6_packet = ipv6::build_icmpv6_echo_request(src_ipv6, dst_ipv6, seq);
+        let compressed = ipv6::compress_ipv6(&ipv6_packet)
+            .ok_or_else(|| JsValue::from_str("IPv6 shim compression failed"))?;
+
+        let fsp_payload = self
+            .sessions
+            .send_data(
+                &dest_addr,
+                wire::FSP_PORT_IPV6_SHIM,
+                wire::FSP_PORT_IPV6_SHIM,
+                &compressed,
+            )
+            .map_err(|e| JsValue::from_str(&e))?;
+
+        let datagram_inner = self.sessions.wrap_in_datagram(&dest_addr, &fsp_payload);
         self.build_encrypted_message(&datagram_inner)
             .map_err(|e| JsValue::from_str(&e))
     }
@@ -616,6 +655,44 @@ impl FipsNode {
                     hex::encode(&event.from[..4]),
                     text
                 ));
+            } else if port == wire::FSP_PORT_IPV6_SHIM {
+                let src_ipv6 = ipv6::ipv6_from_node_addr(&event.from);
+                let dst_ipv6 = ipv6::ipv6_from_node_addr(self.identity.node_addr());
+                if let Some(packet) = ipv6::decompress_ipv6(&data, src_ipv6, dst_ipv6) {
+                    if let Some((_ident, seq)) = ipv6::parse_icmpv6_echo_reply(&packet) {
+                        let now_ms = current_time_ms();
+                        let rtt_ms = self
+                            .pending_pings
+                            .remove(&seq)
+                            .map(|sent| now_ms.saturating_sub(sent));
+                        result.msg_type = "ping_reply".to_string();
+                        result.payload = Some(packet);
+                        result.info = Some(match rtt_ms {
+                            Some(rtt) => format!(
+                                "ICMPv6 Echo Reply from {} seq={} rtt={}ms",
+                                ipv6::format_ipv6(&src_ipv6),
+                                seq,
+                                rtt
+                            ),
+                            None => format!(
+                                "ICMPv6 Echo Reply from {} seq={}",
+                                ipv6::format_ipv6(&src_ipv6),
+                                seq
+                            ),
+                        });
+                    } else {
+                        result.msg_type = "session_ipv6".to_string();
+                        result.payload = Some(packet);
+                        result.info = Some(format!(
+                            "IPv6 shim packet from {}",
+                            ipv6::format_ipv6(&src_ipv6)
+                        ));
+                    }
+                } else {
+                    result.msg_type = "session_ipv6_bad".to_string();
+                    result.payload = Some(data);
+                    result.info = Some("Failed to decompress IPv6 shim packet".to_string());
+                }
             } else {
                 result.msg_type = format!("session_port_{port}");
                 result.payload = Some(data);

@@ -2,6 +2,8 @@ services:
   fips-ws-tun:
     image: fips-test:latest
     container_name: fips-ws-tun
+    environment:
+      RUST_LOG: "info,fips::node::handlers::forwarding=debug,fips::node::handlers::session=debug,fips::upper::tun=trace"
     cap_add:
       - NET_ADMIN
     devices:

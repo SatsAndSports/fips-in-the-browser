@@ -81,8 +81,9 @@
   button:hover { opacity: 0.85; }
   button:disabled { opacity: 0.4; cursor: default; }
   .btn-connect { background: var(--highlight); color: #fff; }
-  .btn-session { background: var(--purple); color: #fff; }
-  .btn-send { background: var(--green); color: #111; }
+.btn-session { background: var(--purple); color: #fff; }
+.btn-send { background: var(--green); color: #111; }
+.btn-ping { background: var(--blue); color: #111; }
   .status { font-size: 0.78rem; margin-top: 0.5rem; }
   .status.connected { color: var(--green); }
   .status.disconnected { color: var(--red); }
@@ -148,7 +149,10 @@
 
 <!-- Chat panel -->
 <div class="panel">
-  <div class="panel-title">3. Chat (end-to-end encrypted)</div>
+  <div class="panel-title">3. Chat / Ping</div>
+  <div style="margin-bottom: 0.75rem;">
+    <button class="btn-ping" id="btnPing" disabled>Send Ping</button>
+  </div>
   <div id="sendRow">
     <input type="text" id="msg" placeholder="Type a message..." disabled>
     <button class="btn-send" id="btnSend" disabled>Send</button>
@@ -173,6 +177,7 @@ const $status        = document.getElementById('status');
 const $sessionNpub   = document.getElementById('sessionNpub');
 const $btnSession    = document.getElementById('btnSession');
 const $sessionStatus = document.getElementById('sessionStatus');
+const $btnPing       = document.getElementById('btnPing');
 const $msg           = document.getElementById('msg');
 const $btnSend       = document.getElementById('btnSend');
 const $log           = document.getElementById('log');
@@ -260,6 +265,7 @@ $btnConnect.addEventListener('click', () => {
         }
         if (sessionDest && node.is_session_established(sessionDest)) {
           setSessionStatus('Session Established', 'connected');
+          $btnPing.disabled = false;
           $msg.disabled = false;
           $btnSend.disabled = false;
           $btnSession.disabled = true;
@@ -269,6 +275,8 @@ $btnConnect.addEventListener('click', () => {
           ? new TextDecoder().decode(new Uint8Array(result.payload))
           : '';
         log('log-chat', `← ${result.info}`);
+      } else if (result.msg_type === 'ping_reply') {
+        log('log-info', `← ${result.info}`);
       } else if (result.msg_type === 'sender_report') {
         // Don't log every sender report — too noisy
       } else if (result.msg_type === 'heartbeat' || result.msg_type === 'receiver_report') {
@@ -299,6 +307,7 @@ $btnConnect.addEventListener('click', () => {
     $btnConnect.disabled = false;
     $sessionNpub.disabled = true;
     $btnSession.disabled = true;
+    $btnPing.disabled = true;
     $msg.disabled = true;
     $btnSend.disabled = true;
     ws = null;
@@ -320,6 +329,7 @@ $btnSession.addEventListener('click', () => {
   if (node.is_session_established(destNpub)) {
     sessionDest = destNpub;
     setSessionStatus('Session Established', 'connected');
+    $btnPing.disabled = false;
     $msg.disabled = false;
     $btnSend.disabled = false;
     $btnSession.disabled = true;
@@ -339,6 +349,7 @@ $btnSession.addEventListener('click', () => {
   } catch (e) {
     if (String(e).includes('already established')) {
       setSessionStatus('Session Established', 'connected');
+      $btnPing.disabled = false;
       $msg.disabled = false;
       $btnSend.disabled = false;
       $btnSession.disabled = true;
@@ -366,6 +377,19 @@ function sendChat() {
   }
 }
 
+function sendPing() {
+  if (!ws || !sessionDest) return;
+
+  try {
+    const pkt = node.send_ping(sessionDest);
+    ws.send(pkt);
+    log('log-send', `→ ICMPv6 Echo Request`);
+  } catch (e) {
+    log('log-err', `Ping error: ${e}`);
+  }
+}
+
+$btnPing.addEventListener('click', sendPing);
 $btnSend.addEventListener('click', sendChat);
 $msg.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
 </script>

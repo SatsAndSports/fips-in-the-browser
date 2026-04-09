@@ -223,6 +223,9 @@ impl FipsNode {
 
         // Derive dest NodeAddr from x-only pubkey
         let dest_addr = identity::node_addr_from_x_only(&x_only);
+        if dest_addr == *self.identity.node_addr() {
+            return Err(JsValue::from_str("cannot start a session to self"));
+        }
 
         // Initiate session (builds Noise XK msg1 + SessionSetup)
         let fsp_payload = self
@@ -249,6 +252,9 @@ impl FipsNode {
     pub fn send_message(&mut self, dest_npub: &str, text: &str) -> Result<Vec<u8>, JsValue> {
         let x_only = identity::decode_npub(dest_npub).map_err(|e| JsValue::from_str(&e))?;
         let dest_addr = identity::node_addr_from_x_only(&x_only);
+        if dest_addr == *self.identity.node_addr() {
+            return Err(JsValue::from_str("cannot send a session message to self"));
+        }
 
         // Encrypt at session layer (FSP)
         let fsp_payload = self
@@ -273,6 +279,11 @@ impl FipsNode {
     pub fn send_ping(&mut self, dest_npub: &str) -> Result<Vec<u8>, JsValue> {
         let x_only = identity::decode_npub(dest_npub).map_err(|e| JsValue::from_str(&e))?;
         let dest_addr = identity::node_addr_from_x_only(&x_only);
+        if dest_addr == *self.identity.node_addr() {
+            return Err(JsValue::from_str(
+                "cannot send an IPv6 ping to self through a session",
+            ));
+        }
 
         let src_ipv6 = ipv6::ipv6_from_node_addr(self.identity.node_addr());
         let dst_ipv6 = ipv6::ipv6_from_node_addr(&dest_addr);

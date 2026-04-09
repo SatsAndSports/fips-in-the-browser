@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FIPS Browser VM</title>
+<script src="v86/build/libv86.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #171b24;
+    --accent: #2a3650;
+    --text: #e5e7eb;
+    --muted: #9ca3af;
+    --green: #4ade80;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --purple: #c084fc;
+    --mono: "Fira Code", "Cascadia Code", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--mono);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 1.5rem;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  .subtitle { color: var(--muted); font-size: 0.8rem; margin-bottom: 1rem; }
+  .layout {
+    display: grid;
+    grid-template-columns: 420px 1fr;
+    gap: 1rem;
+  }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+  }
+  .panel-title {
+    font-size: 0.85rem;
+    color: var(--blue);
+    margin-bottom: 0.75rem;
+    border-bottom: 1px solid var(--accent);
+    padding-bottom: 0.4rem;
+  }
+  label { display:block; font-size:0.72rem; color:var(--muted); margin-bottom:0.2rem; }
+  input[type="text"] {
+    width: 100%;
+    background: #0b0e14;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    padding: 0.45rem 0.6rem;
+    margin-bottom: 0.6rem;
+  }
+  button {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    padding: 0.45rem 1rem;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-right: 0.5rem;
+  }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .btn-connect { background: #e94560; color: white; }
+  .btn-session { background: var(--purple); color: white; }
+  .btn-boot { background: var(--green); color: #111; }
+  .status { font-size: 0.78rem; margin-top: 0.4rem; }
+  .connected { color: var(--green); }
+  .disconnected { color: var(--red); }
+  .handshaking { color: var(--purple); }
+  .info-row { font-size: 0.75rem; color: var(--muted); margin-bottom: 0.3rem; word-break: break-all; }
+  .info-row span { color: var(--text); }
+  .commands {
+    white-space: pre-wrap;
+    background: #0b0e14;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 0.75rem;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    min-height: 120px;
+  }
+  #log {
+    white-space: pre-wrap;
+    background: #0b0e14;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 0.75rem;
+    height: 300px;
+    overflow-y: auto;
+    font-size: 0.72rem;
+    line-height: 1.5;
+  }
+  .log-info { color: var(--muted); }
+  .log-err { color: var(--red); }
+  .log-link { color: var(--blue); }
+  .log-vm { color: var(--green); }
+  #screen_container {
+    min-height: 520px;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 0.5rem;
+    background: black;
+  }
+  #screen_container > div {
+    white-space: pre;
+    font: 14px monospace;
+    line-height: 14px;
+  }
+  @media (max-width: 980px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<h1>FIPS Browser VM</h1>
+<p class="subtitle">Boot a tiny Linux in the browser and bridge its IPv6 packets into FIPS sessions.</p>
+
+<div class="layout">
+  <div>
+    <div class="panel">
+      <div class="panel-title">Identity</div>
+      <div class="info-row">npub: <span id="myNpub">loading...</span></div>
+      <div class="info-row">NodeAddr: <span id="myNodeAddr"></span></div>
+      <div class="info-row">FIPS IPv6: <span id="myIpv6"></span></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">1. Gateway Link</div>
+      <label for="url">WebSocket URL</label>
+      <input type="text" id="url" value="ws://localhost:8080">
+      <label for="gatewayNpub">Gateway npub</label>
+      <input type="text" id="gatewayNpub" placeholder="npub1...">
+      <div>
+        <button class="btn-connect" id="btnConnect" disabled>Connect</button>
+      </div>
+      <div class="status disconnected" id="linkStatus">Loading WASM...</div>
+      <div class="info-row">Gateway IPv6: <span id="gatewayIpv6">-</span></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">2. Session to Gateway</div>
+      <div>
+        <button class="btn-session" id="btnSession" disabled>Connect Session</button>
+      </div>
+      <div class="status disconnected" id="sessionStatus">No session</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">3. VM</div>
+      <div>
+        <button class="btn-boot" id="btnBoot" disabled>Boot Linux VM</button>
+      </div>
+      <div class="status disconnected" id="vmStatus">VM not started</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Guest Commands</div>
+      <div class="commands" id="commands">Connect link + session first, then boot the VM to get guest setup commands.</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Log</div>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <div class="panel-title">VM Screen</div>
+      <div id="screen_container">
+        <div></div>
+        <canvas style="display:none"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import init, { FipsNode } from '../pkg/fips_wasm.js';
+
+const $myNpub = document.getElementById('myNpub');
+const $myNodeAddr = document.getElementById('myNodeAddr');
+const $myIpv6 = document.getElementById('myIpv6');
+const $url = document.getElementById('url');
+const $gatewayNpub = document.getElementById('gatewayNpub');
+const $gatewayIpv6 = document.getElementById('gatewayIpv6');
+const $btnConnect = document.getElementById('btnConnect');
+const $btnSession = document.getElementById('btnSession');
+const $btnBoot = document.getElementById('btnBoot');
+const $linkStatus = document.getElementById('linkStatus');
+const $sessionStatus = document.getElementById('sessionStatus');
+const $vmStatus = document.getElementById('vmStatus');
+const $commands = document.getElementById('commands');
+const $log = document.getElementById('log');
+const $screen = document.getElementById('screen_container');
+
+let node = null;
+let ws = null;
+let vm = null;
+let sessionDest = null;
+let guestMac = null;
+const gatewayMac = new Uint8Array([0x02, 0x46, 0x49, 0x50, 0x53, 0x01]);
+const pendingVmFrames = [];
+
+function utcTime() {
+  return new Date().toISOString().slice(11);
+}
+
+function log(cls, prefix, text) {
+  const span = document.createElement('span');
+  span.className = cls;
+  span.textContent = `${utcTime()} ${prefix} ${text}\n`;
+  $log.appendChild(span);
+  $log.scrollTop = $log.scrollHeight;
+}
+
+function setStatus(el, text, cls) {
+  el.textContent = text;
+  el.className = `status ${cls}`;
+}
+
+function hashParams() {
+  return new URLSearchParams(window.location.hash.slice(1));
+}
+
+function updateCommands() {
+  if (!$gatewayIpv6.textContent || $gatewayIpv6.textContent === '-' || !$myIpv6.textContent) {
+    return;
+  }
+
+  const guestIp = $myIpv6.textContent;
+  const gatewayIp = $gatewayIpv6.textContent;
+  const gatewayMacText = Array.from(gatewayMac).map(x => x.toString(16).padStart(2, '0')).join(':');
+
+  $commands.textContent = [
+    '# In the VM shell, try:',
+    `ifconfig eth0 up`,
+    `ifconfig eth0 add ${guestIp}/8`,
+    `# The browser bridge will answer NDP for ${gatewayIp}`,
+    `ping6 ${gatewayIp}`,
+    `# or: ping -6 ${gatewayIp}`,
+    '',
+    `# Bridge gateway MAC (for reference): ${gatewayMacText}`,
+  ].join('\n');
+}
+
+function connectLink() {
+  const url = $url.value.trim();
+  const gateway = $gatewayNpub.value.trim();
+  if (!url || !gateway) {
+    log('log-err', '[link]', 'URL and gateway npub are required.');
+    return;
+  }
+
+  $btnConnect.disabled = true;
+  setStatus($linkStatus, 'Connecting...', 'handshaking');
+  log('log-link', '[link]', `Connecting to ${url}...`);
+
+  ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    log('log-link', '[link]', 'WebSocket connected.');
+    try {
+      const msg1 = node.initiate_handshake(gateway);
+      ws.send(msg1);
+      log('log-link', '[link]', `Sent IK msg1 (${msg1.length} bytes)`);
+    } catch (e) {
+      log('log-err', '[link]', `Handshake failed: ${e}`);
+      setStatus($linkStatus, 'Disconnected', 'disconnected');
+      $btnConnect.disabled = false;
+    }
+  };
+
+  ws.onmessage = (event) => {
+    const data = new Uint8Array(event.data);
+    try {
+      const result = node.process_incoming(data);
+
+      if (result.msg_type === 'msg2') {
+        log('log-link', '[link]', `← ${result.info}`);
+        setStatus($linkStatus, 'Link Established', 'connected');
+        $btnSession.disabled = false;
+      } else if (result.msg_type === 'session') {
+        log('log-link', '[sess]', `← ${result.info}`);
+        if (result.session_peer_npub) {
+          sessionDest = result.session_peer_npub;
+        }
+        if (sessionDest && node.is_session_established(sessionDest)) {
+          setStatus($sessionStatus, 'Session Established', 'connected');
+          $btnBoot.disabled = false;
+        }
+      } else if (result.msg_type === 'session_ipv6') {
+        const packet = new Uint8Array(result.payload);
+        injectIpv6ToVm(packet);
+        if (result.info) log('log-vm', '[vm]', `← ${result.info}`);
+      } else if (result.msg_type === 'tree_announce' || result.msg_type === 'filter_announce') {
+        // Quiet mesh noise
+      } else if (result.msg_type === 'sender_report' || result.msg_type === 'heartbeat' || result.msg_type === 'receiver_report') {
+        // Silent maintenance traffic
+      } else if (result.info) {
+        log('log-link', '[misc]', `← [${result.msg_type}] ${result.info}`);
+      }
+
+      if (result.responses && result.responses.length > 0) {
+        for (const resp of result.responses) {
+          ws.send(new Uint8Array(resp));
+        }
+      }
+    } catch (e) {
+      log('log-err', '[proc]', `Processing error: ${e}`);
+    }
+  };
+
+  ws.onclose = () => {
+    log('log-info', '[link]', 'WebSocket closed.');
+    setStatus($linkStatus, 'Disconnected', 'disconnected');
+    setStatus($sessionStatus, 'No session', 'disconnected');
+    $btnConnect.disabled = false;
+    $btnSession.disabled = true;
+    $btnBoot.disabled = true;
+    ws = null;
+  };
+
+  ws.onerror = () => {
+    log('log-err', '[link]', 'WebSocket error.');
+    setStatus($linkStatus, 'Disconnected', 'disconnected');
+    $btnConnect.disabled = false;
+  };
+}
+
+function connectGatewaySession() {
+  const gateway = $gatewayNpub.value.trim();
+  if (!gateway) {
+    log('log-err', '[sess]', 'Gateway npub is required.');
+    return;
+  }
+  sessionDest = gateway;
+  try {
+    const pkt = node.connect_session(gateway);
+    ws.send(pkt);
+    setStatus($sessionStatus, 'Initiating session...', 'handshaking');
+    log('log-link', '[sess]', `Sent SessionSetup (${pkt.length} bytes on wire)`);
+    $btnSession.disabled = true;
+  } catch (e) {
+    if (String(e).includes('already established')) {
+      setStatus($sessionStatus, 'Session Established', 'connected');
+      $btnBoot.disabled = false;
+      log('log-info', '[sess]', 'Session already established.');
+    } else {
+      log('log-err', '[sess]', `Session initiation failed: ${e}`);
+      setStatus($sessionStatus, 'Failed', 'disconnected');
+    }
+  }
+}
+
+function bootVm() {
+  if (vm) return;
+  if (typeof V86 === 'undefined') {
+    log('log-err', '[vm]', 'v86 library failed to load.');
+    return;
+  }
+
+  node.set_ipv6_passthrough(true);
+  log('log-vm', '[vm]', 'Booting Buildroot VM...');
+  setStatus($vmStatus, 'Booting...', 'handshaking');
+
+  vm = new V86({
+    wasm_path: 'v86/build/v86.wasm',
+    memory_size: 64 * 1024 * 1024,
+    vga_memory_size: 2 * 1024 * 1024,
+    screen_container: $screen,
+    bios: { url: 'v86/bios/seabios.bin' },
+    vga_bios: { url: 'v86/bios/vgabios.bin' },
+    bzimage: { url: 'v86/images/buildroot-bzimage68.bin' },
+    autostart: true,
+  });
+
+  vm.add_listener('emulator-ready', () => {
+    setStatus($vmStatus, 'VM running', 'connected');
+    log('log-vm', '[vm]', 'VM boot started. Click the screen and use the guest commands panel.');
+  });
+
+  vm.add_listener('net0-send', data => {
+    try {
+      handleGuestEthernet(new Uint8Array(data));
+    } catch (e) {
+      log('log-err', '[vm]', `Bridge error: ${e}`);
+    }
+  });
+
+  updateCommands();
+}
+
+function handleGuestEthernet(frame) {
+  if (frame.length < 14) return;
+
+  const dstMac = frame.slice(0, 6);
+  const srcMac = frame.slice(6, 12);
+  const etherType = (frame[12] << 8) | frame[13];
+  const payload = frame.slice(14);
+
+  if (!guestMac) {
+    guestMac = new Uint8Array(srcMac);
+    flushPendingVmFrames();
+  }
+
+  if (etherType !== 0x86DD) {
+    return; // Only IPv6 for now
+  }
+
+  if (payload.length < 40) return;
+
+  // If this is Neighbor Solicitation for the gateway IPv6, answer locally.
+  if (isNeighborSolicitationForGateway(payload)) {
+    const na = buildNeighborAdvertisement(payload);
+    if (na) {
+      vm.bus.send('net0-receive', na);
+      log('log-vm', '[vm]', 'Answered Neighbor Solicitation for gateway.');
+    }
+    return;
+  }
+
+  // Forward only FIPS IPv6 packets for now.
+  if (payload[24] !== 0xfd) {
+    return;
+  }
+
+  if (!ws || !sessionDest || !node.is_session_established(sessionDest)) {
+    log('log-err', '[vm]', 'Guest sent IPv6 packet but no gateway session is established.');
+    return;
+  }
+
+  const pkt = node.send_ipv6(sessionDest, payload);
+  ws.send(pkt);
+  log('log-vm', '[vm]', `→ Guest IPv6 packet (${payload.length} bytes)`);
+}
+
+function injectIpv6ToVm(ipv6Packet) {
+  if (!vm) return;
+  const frame = buildEthernetFrame(guestMac, gatewayMac, 0x86DD, ipv6Packet);
+  if (!frame) {
+    pendingVmFrames.push(ipv6Packet);
+    return;
+  }
+  vm.bus.send('net0-receive', frame);
+}
+
+function flushPendingVmFrames() {
+  if (!guestMac || !vm) return;
+  while (pendingVmFrames.length > 0) {
+    const ipv6Packet = pendingVmFrames.shift();
+    const frame = buildEthernetFrame(guestMac, gatewayMac, 0x86DD, ipv6Packet);
+    if (frame) vm.bus.send('net0-receive', frame);
+  }
+}
+
+function buildEthernetFrame(dstMac, srcMac, etherType, payload) {
+  if (!dstMac) return null;
+  const frame = new Uint8Array(14 + payload.length);
+  frame.set(dstMac, 0);
+  frame.set(srcMac, 6);
+  frame[12] = (etherType >> 8) & 0xFF;
+  frame[13] = etherType & 0xFF;
+  frame.set(payload, 14);
+  return frame;
+}
+
+function isNeighborSolicitationForGateway(ipv6Packet) {
+  const gateway = parseIpv6Text($gatewayIpv6.textContent);
+  if (!gateway) return false;
+  if (ipv6Packet.length < 40 + 24) return false;
+  if (ipv6Packet[6] !== 58) return false; // ICMPv6
+  const icmp = ipv6Packet.slice(40);
+  if (icmp[0] !== 135) return false; // Neighbor Solicitation
+  const target = icmp.slice(8, 24);
+  return bytesEqual(target, gateway);
+}
+
+function buildNeighborAdvertisement(requestIpv6) {
+  if (!guestMac) return null;
+  const gateway = parseIpv6Text($gatewayIpv6.textContent);
+  if (!gateway) return null;
+
+  const src = gateway;
+  const dst = requestIpv6.slice(8, 24); // requester source
+  const hopLimit = 255;
+
+  const icmp = new Uint8Array(32);
+  icmp[0] = 136; // Neighbor Advertisement
+  icmp[1] = 0;
+  // checksum at [2..4]
+  icmp[4] = 0x60; // Solicited + Override flags
+  icmp.set(gateway, 8); // target address
+  icmp[24] = 2; // target link-layer address option
+  icmp[25] = 1; // length = 1 * 8 bytes
+  icmp.set(gatewayMac, 26);
+
+  const checksum = icmpv6Checksum(src, dst, icmp);
+  icmp[2] = (checksum >> 8) & 0xFF;
+  icmp[3] = checksum & 0xFF;
+
+  const ipv6 = new Uint8Array(40 + icmp.length);
+  ipv6[0] = 0x60;
+  ipv6[4] = (icmp.length >> 8) & 0xFF;
+  ipv6[5] = icmp.length & 0xFF;
+  ipv6[6] = 58; // ICMPv6
+  ipv6[7] = hopLimit;
+  ipv6.set(src, 8);
+  ipv6.set(dst, 24);
+  ipv6.set(icmp, 40);
+
+  return buildEthernetFrame(guestMac, gatewayMac, 0x86DD, ipv6);
+}
+
+function icmpv6Checksum(src, dst, icmp) {
+  let sum = 0;
+  sum = addWords(sum, src);
+  sum = addWords(sum, dst);
+  const len = new Uint8Array([(icmp.length >>> 24) & 0xFF, (icmp.length >>> 16) & 0xFF, (icmp.length >>> 8) & 0xFF, icmp.length & 0xFF]);
+  sum = addWords(sum, len);
+  sum = addWords(sum, new Uint8Array([0, 0, 0, 58]));
+  sum = addWords(sum, icmp);
+  while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+  return (~sum) & 0xFFFF;
+}
+
+function addWords(sum, bytes) {
+  let i = 0;
+  for (; i + 1 < bytes.length; i += 2) {
+    sum += (bytes[i] << 8) | bytes[i + 1];
+  }
+  if (i < bytes.length) sum += bytes[i] << 8;
+  return sum >>> 0;
+}
+
+function parseIpv6Text(text) {
+  if (!text || text === '-') return null;
+  // Expand a textual IPv6 address into 16 bytes.
+  const parts = text.split('::');
+  if (parts.length > 2) return null;
+  const head = parts[0] ? parts[0].split(':').filter(Boolean) : [];
+  const tail = parts.length === 2 && parts[1] ? parts[1].split(':').filter(Boolean) : [];
+  const missing = 8 - (head.length + tail.length);
+  if (missing < 0) return null;
+  const groups = [
+    ...head,
+    ...new Array(missing).fill('0'),
+    ...tail,
+  ];
+  if (groups.length !== 8) return null;
+  const out = new Uint8Array(16);
+  for (let i = 0; i < 8; i++) {
+    const value = parseInt(groups[i], 16);
+    if (Number.isNaN(value) || value < 0 || value > 0xFFFF) return null;
+    out[i * 2] = (value >> 8) & 0xFF;
+    out[i * 2 + 1] = value & 0xFF;
+  }
+  return out;
+}
+
+function bytesEqual(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+await init();
+node = new FipsNode();
+node.set_ipv6_passthrough(true);
+
+$myNpub.textContent = node.npub();
+$myNodeAddr.textContent = node.node_addr_hex();
+$myIpv6.textContent = node.resolve_fips_name(`${node.npub()}.fips`).ipv6;
+$btnConnect.disabled = false;
+setStatus($linkStatus, 'Ready', 'disconnected');
+log('log-info', '[init]', 'WASM loaded. VM page ready.');
+log('log-info', '[init]', `npub: ${node.npub()}`);
+log('log-info', '[init]', `ipv6: ${$myIpv6.textContent}`);
+
+const params = hashParams();
+if (params.get('url')) $url.value = params.get('url');
+if (params.get('gateway')) $gatewayNpub.value = params.get('gateway');
+if ($gatewayNpub.value.trim()) {
+  try {
+    const resolved = node.resolve_fips_name(`${$gatewayNpub.value.trim()}.fips`);
+    $gatewayIpv6.textContent = resolved.ipv6;
+    updateCommands();
+  } catch (_) {}
+}
+
+if ($url.value.trim() && $gatewayNpub.value.trim()) {
+  log('log-info', '[link]', 'Gateway settings loaded from URL fragment; auto-connecting.');
+  connectLink();
+}
+
+$btnConnect.addEventListener('click', () => {
+  try {
+    const resolved = node.resolve_fips_name(`${$gatewayNpub.value.trim()}.fips`);
+    $gatewayIpv6.textContent = resolved.ipv6;
+  } catch (_) {
+    $gatewayIpv6.textContent = '-';
+  }
+  updateCommands();
+  connectLink();
+});
+
+$btnSession.addEventListener('click', connectGatewaySession);
+$btnBoot.addEventListener('click', bootVm);
+</script>
+</body>
+</html>

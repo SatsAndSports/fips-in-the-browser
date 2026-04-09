@@ -103,6 +103,7 @@ pub struct FipsNode {
     session_epoch: [u8; 8],
     next_ping_seq: u16,
     pending_pings: HashMap<u16, u64>,
+    raw_ipv6_passthrough: bool,
 }
 
 #[wasm_bindgen]
@@ -119,6 +120,7 @@ impl FipsNode {
             session_epoch: epoch,
             next_ping_seq: 1,
             pending_pings: HashMap::new(),
+            raw_ipv6_passthrough: false,
             identity,
             link: None,
         }
@@ -135,6 +137,7 @@ impl FipsNode {
             session_epoch: epoch,
             next_ping_seq: 1,
             pending_pings: HashMap::new(),
+            raw_ipv6_passthrough: false,
             identity,
             link: None,
         })
@@ -154,6 +157,14 @@ impl FipsNode {
     pub fn resolve_fips_name(&self, name: &str) -> Result<JsValue, JsValue> {
         let resolved = dns::resolve_fips_query(name).map_err(|e| JsValue::from_str(&e))?;
         serde_wasm_bindgen::to_value(&resolved).map_err(|e| JsValue::from_str(&format!("{e}")))
+    }
+
+    /// Enable or disable raw IPv6 passthrough mode.
+    ///
+    /// When enabled, incoming port-256 IPv6 shim packets are surfaced back to JS
+    /// as raw IPv6 packets instead of being handled internally for ICMPv6 ping.
+    pub fn set_ipv6_passthrough(&mut self, enabled: bool) {
+        self.raw_ipv6_passthrough = enabled;
     }
 
     /// Initiate a Noise IK handshake with a remote peer.
@@ -301,6 +312,34 @@ impl FipsNode {
 
         let ipv6_packet = ipv6::build_icmpv6_echo_request(src_ipv6, dst_ipv6, seq);
         let compressed = ipv6::compress_ipv6(&ipv6_packet)
+            .ok_or_else(|| JsValue::from_str("IPv6 shim compression failed"))?;
+
+        let fsp_payload = self
+            .sessions
+            .send_data(
+                &dest_addr,
+                wire::FSP_PORT_IPV6_SHIM,
+                wire::FSP_PORT_IPV6_SHIM,
+                &compressed,
+            )
+            .map_err(|e| JsValue::from_str(&e))?;
+
+        let datagram_inner = self.sessions.wrap_in_datagram(&dest_addr, &fsp_payload);
+        self.build_encrypted_message(&datagram_inner)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Send a raw IPv6 packet through an established session on port 256.
+    pub fn send_ipv6(&mut self, dest_npub: &str, packet: &[u8]) -> Result<Vec<u8>, JsValue> {
+        let x_only = identity::decode_npub(dest_npub).map_err(|e| JsValue::from_str(&e))?;
+        let dest_addr = identity::node_addr_from_x_only(&x_only);
+        if dest_addr == *self.identity.node_addr() {
+            return Err(JsValue::from_str(
+                "cannot send raw IPv6 to self through a session",
+            ));
+        }
+
+        let compressed = ipv6::compress_ipv6(packet)
             .ok_or_else(|| JsValue::from_str("IPv6 shim compression failed"))?;
 
         let fsp_payload = self
@@ -677,7 +716,14 @@ impl FipsNode {
                 let src_ipv6 = ipv6::ipv6_from_node_addr(&event.from);
                 let dst_ipv6 = ipv6::ipv6_from_node_addr(self.identity.node_addr());
                 if let Some(packet) = ipv6::decompress_ipv6(&data, src_ipv6, dst_ipv6) {
-                    if let Some((_ident, seq)) = ipv6::parse_icmpv6_echo_reply(&packet) {
+                    if self.raw_ipv6_passthrough {
+                        result.msg_type = "session_ipv6".to_string();
+                        result.payload = Some(packet);
+                        result.info = Some(format!(
+                            "IPv6 shim packet from {}",
+                            ipv6::format_ipv6(&src_ipv6)
+                        ));
+                    } else if let Some((_ident, seq)) = ipv6::parse_icmpv6_echo_reply(&packet) {
                         let now_ms = current_time_ms();
                         let rtt_ms = self
                             .pending_pings

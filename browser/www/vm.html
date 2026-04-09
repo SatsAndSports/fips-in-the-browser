@@ -103,6 +103,17 @@
   .log-err { color: var(--red); }
   .log-link { color: var(--blue); }
   .log-vm { color: var(--green); }
+  #serialLog {
+    white-space: pre-wrap;
+    background: #0b0e14;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 0.75rem;
+    height: 220px;
+    overflow-y: auto;
+    font-size: 0.72rem;
+    line-height: 1.5;
+  }
   #screen_container {
     min-height: 520px;
     border: 1px solid var(--accent);
@@ -182,6 +193,14 @@
       <div class="panel-title">Log</div>
       <div id="log"></div>
     </div>
+
+    <div class="panel">
+      <div class="panel-title">Serial Log</div>
+      <div style="margin-bottom: 0.75rem;">
+        <button class="btn-session" id="btnCopySerial">Copy Serial Log</button>
+      </div>
+      <div id="serialLog"></div>
+    </div>
   </div>
 
   <div>
@@ -215,6 +234,8 @@ const $sessionStatus = document.getElementById('sessionStatus');
 const $vmStatus = document.getElementById('vmStatus');
 const $commands = document.getElementById('commands');
 const $log = document.getElementById('log');
+const $serialLog = document.getElementById('serialLog');
+const $btnCopySerial = document.getElementById('btnCopySerial');
 const $screen = document.getElementById('screen_container');
 
 let node = null;
@@ -224,6 +245,12 @@ let sessionDest = null;
 let guestMac = null;
 const gatewayMac = new Uint8Array([0x02, 0x46, 0x49, 0x50, 0x53, 0x01]);
 const pendingVmFrames = [];
+let serialBuffer = '';
+let serialTail = '';
+let vmInitScriptUploaded = false;
+let vmInitCommandsSent = false;
+let vmSessionAutoStarted = false;
+let vmInitTriggered = false;
 
 function utcTime() {
   return new Date().toISOString().slice(11);
@@ -235,6 +262,15 @@ function log(cls, prefix, text) {
   span.textContent = `${utcTime()} ${prefix} ${text}\n`;
   $log.appendChild(span);
   $log.scrollTop = $log.scrollHeight;
+}
+
+function logSerial(text) {
+  $serialLog.textContent += text;
+  $serialLog.scrollTop = $serialLog.scrollHeight;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function setStatus(el, text, cls) {
@@ -304,6 +340,10 @@ function connectLink() {
         log('log-link', '[link]', `← ${result.info}`);
         setStatus($linkStatus, 'Link Established', 'connected');
         $btnSession.disabled = false;
+        if (!vmSessionAutoStarted && $gatewayNpub.value.trim()) {
+          vmSessionAutoStarted = true;
+          connectGatewaySession();
+        }
       } else if (result.msg_type === 'session') {
         log('log-link', '[sess]', `← ${result.info}`);
         if (result.session_peer_npub) {
@@ -312,6 +352,9 @@ function connectLink() {
         if (sessionDest && node.is_session_established(sessionDest)) {
           setStatus($sessionStatus, 'Session Established', 'connected');
           $btnBoot.disabled = false;
+          if (!vm) {
+            bootVm();
+          }
         }
       } else if (result.msg_type === 'session_ipv6') {
         const packet = new Uint8Array(result.payload);
@@ -396,6 +439,7 @@ function bootVm() {
     bios: { url: 'v86/bios/seabios.bin' },
     vga_bios: { url: 'v86/bios/vgabios.bin' },
     bzimage: { url: 'v86/images/buildroot-bzimage68.bin' },
+    filesystem: {},
     autostart: true,
   });
 
@@ -405,6 +449,17 @@ function bootVm() {
     $pasteText.disabled = false;
     $btnPasteClipboard.disabled = false;
     $btnSendText.disabled = false;
+    uploadInitScript();
+  });
+
+  vm.add_listener('serial0-output-byte', byte => {
+    const char = String.fromCharCode(byte);
+    if (char !== '\r') {
+      serialBuffer += char;
+      serialTail = (serialTail + char).slice(-32);
+      logSerial(char);
+      maybeRunVmInitCommands();
+    }
   });
 
   vm.add_listener('net0-send', data => {
@@ -416,6 +471,59 @@ function bootVm() {
   });
 
   updateCommands();
+}
+
+async function uploadInitScript() {
+  if (!vm || vmInitScriptUploaded) return;
+  if (!$gatewayIpv6.textContent || $gatewayIpv6.textContent === '-' || !$myIpv6.textContent) return;
+
+  const script = [
+    '#!/bin/sh',
+    'set -x',
+    `ifconfig eth0 up`,
+    `ifconfig eth0 add ${$myIpv6.textContent}/8`,
+    'sleep 3',
+    `ping -6 -c 3 ${$gatewayIpv6.textContent} || ping6 -c 3 ${$gatewayIpv6.textContent}`,
+  ].join('\n') + '\n';
+
+  try {
+    await vm.create_file('/fips-init.sh', new TextEncoder().encode(script));
+    vmInitScriptUploaded = true;
+    log('log-vm', '[vm]', 'Uploaded /fips-init.sh to host 9p filesystem.');
+  } catch (e) {
+    log('log-err', '[vm]', `Failed to upload init script: ${e}`);
+  }
+}
+
+async function maybeRunVmInitCommands() {
+  if (!vm || !vmInitScriptUploaded || vmInitCommandsSent || vmInitTriggered) return;
+  if (!serialTail.endsWith('~% ')) return;
+  vmInitTriggered = true;
+
+  const stages = [
+    { label: 'mkdir', command: 'mkdir -p /mnt\n', before: 500, after: 1000 },
+    { label: 'mount', command: 'mount | grep " on /mnt " >/dev/null 2>&1 || mount -t 9p host9p /mnt\n', before: 0, after: 1500 },
+    { label: 'run', command: 'sh /mnt/fips-init.sh\n', before: 0, after: 0 },
+  ];
+
+  try {
+    log('log-vm', '[vm]', 'Guest shell prompt detected; starting staged init typing.');
+    for (let i = 0; i < stages.length; i++) {
+      const stage = stages[i];
+      if (stage.before) {
+        await sleep(stage.before);
+      }
+      await vm.keyboard_send_text(stage.command, 5);
+      log('log-vm', '[vm]', `Typed init stage ${i + 1}/${stages.length}: ${stage.label}`);
+      if (stage.after) {
+        await sleep(stage.after);
+      }
+    }
+    vmInitCommandsSent = true;
+    log('log-vm', '[vm]', 'All VM init commands typed into guest console.');
+  } catch (e) {
+    log('log-err', '[vm]', `Failed during staged VM init typing: ${e}`);
+  }
 }
 
 function handleGuestEthernet(frame) {
@@ -643,6 +751,15 @@ $btnPasteClipboard.addEventListener('click', async () => {
     log('log-vm', '[vm]', `Clipboard loaded (${text.length} chars).`);
   } catch (e) {
     log('log-err', '[vm]', `Clipboard read failed: ${e}`);
+  }
+});
+
+$btnCopySerial.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText($serialLog.textContent);
+    log('log-info', '[vm]', 'Copied serial log to clipboard.');
+  } catch (e) {
+    log('log-err', '[vm]', `Copy serial log failed: ${e}`);
   }
 });
 

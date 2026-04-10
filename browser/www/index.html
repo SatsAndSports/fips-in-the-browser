@@ -261,7 +261,6 @@ let serialBuffer = '';
 let serialTail = '';
 let vmInitScriptUploaded = false;
 let vmInitCommandsSent = false;
-let vmSessionAutoStarted = false;
 let vmInitTriggered = false;
 let vmFocused = false;
 const dnsCache = {};      // hex(ipv6_bytes) → npub
@@ -375,6 +374,7 @@ function updateCommands() {
   const gatewayIp = $gatewayIpv6.textContent;
   const gatewayMacText = Array.from(gatewayMac).map(x => x.toString(16).padStart(2, '0')).join(':');
 
+  const gatewayNpubVal = $gatewayNpub.value.trim();
   $commands.textContent = [
     '# In the VM shell, try:',
     `ifconfig eth0 up`,
@@ -382,10 +382,9 @@ function updateCommands() {
     `echo "nameserver ${gatewayIp}" > /etc/resolv.conf`,
     '',
     `# The browser bridge answers NDP + DNS for all fd::/8`,
-    `ping6 ${gatewayIp}`,
-    `# or: ping -6 <npub1...>.fips`,
-    '',
-    `# Bridge gateway MAC (for reference): ${gatewayMacText}`,
+    `# Sessions are established lazily on first ping`,
+    `ping -6 ${gatewayNpubVal}.fips`,
+    `ping -6 <other-npub>.fips`,
   ].join('\n');
 }
 
@@ -426,17 +425,14 @@ function connectLink() {
         log('log-link', '[link]', `← ${result.info}`);
         setStatus($linkStatus, 'Link Established', 'connected');
         $btnSession.disabled = false;
-        if (!vmSessionAutoStarted && $gatewayNpub.value.trim()) {
-          vmSessionAutoStarted = true;
-          connectGatewaySession();
+        // Boot VM immediately — sessions are established lazily on first ping
+        $btnBoot.disabled = false;
+        if (!vm) {
+          bootVm();
         }
       } else if (result.msg_type === 'session') {
         log('log-link', '[sess]', `← ${result.info}`);
         if (result.session_peer_npub) {
-          // Track the gateway session separately
-          if (!sessionDest) {
-            sessionDest = result.session_peer_npub;
-          }
           // Flush any queued IPv6 packets for this newly established session
           const peerNpub = result.session_peer_npub;
           if (node.is_session_established(peerNpub)) {
@@ -453,12 +449,8 @@ function connectLink() {
             }
           }
         }
-        if (sessionDest && node.is_session_established(sessionDest)) {
-          setStatus($sessionStatus, 'Session Established', 'connected');
-          $btnBoot.disabled = false;
-          if (!vm) {
-            bootVm();
-          }
+        if (result.session_peer_npub && node.is_session_established(result.session_peer_npub)) {
+          setStatus($sessionStatus, 'Session active', 'connected');
         }
       } else if (result.msg_type === 'session_ipv6') {
         const packet = new Uint8Array(result.payload);
@@ -612,7 +604,7 @@ async function uploadInitScript() {
     `ifconfig eth0 add ${$myIpv6.textContent}/8`,
     `echo "nameserver ${$gatewayIpv6.textContent}" > /etc/resolv.conf`,
     'sleep 3',
-    `ping -6 -c 3 ${$gatewayIpv6.textContent} || ping6 -c 3 ${$gatewayIpv6.textContent}`,
+    `ping -6 -c 3 ${$gatewayNpub.value.trim()}.fips`,
   ].join('\n') + '\n';
 
   try {

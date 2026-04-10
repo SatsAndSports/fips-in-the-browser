@@ -1,0 +1,16 @@
+{
+  "name": "fips-wasm",
+  "type": "module",
+  "description": "FIPS protocol implementation for WebAssembly (browser FIPS node)",
+  "version": "0.1.0",
+  "files": [
+    "fips_wasm_bg.wasm",
+    "fips_wasm.js",
+    "fips_wasm.d.ts"
+  ],
+  "main": "fips_wasm.js",
+  "types": "fips_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

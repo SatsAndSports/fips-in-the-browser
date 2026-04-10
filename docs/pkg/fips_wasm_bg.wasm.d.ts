@@ -1,0 +1,33 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_fipsnode_free: (a: number, b: number) => void;
+export const fipsnode_connect_session: (a: number, b: number, c: number) => [number, number, number, number];
+export const fipsnode_from_nsec: (a: number, b: number) => [number, number, number];
+export const fipsnode_handle_dns_query: (a: number, b: number, c: number) => [number, number];
+export const fipsnode_initiate_handshake: (a: number, b: number, c: number) => [number, number, number, number];
+export const fipsnode_is_established: (a: number) => number;
+export const fipsnode_is_session_established: (a: number, b: number, c: number) => number;
+export const fipsnode_list_sessions: (a: number) => [number, number, number];
+export const fipsnode_new: () => number;
+export const fipsnode_node_addr_hex: (a: number) => [number, number];
+export const fipsnode_npub: (a: number) => [number, number];
+export const fipsnode_process_incoming: (a: number, b: number, c: number) => [number, number, number];
+export const fipsnode_prune_idle_sessions: (a: number, b: number) => number;
+export const fipsnode_remove_session: (a: number, b: number, c: number) => number;
+export const fipsnode_resolve_fips_name: (a: number, b: number, c: number) => [number, number, number];
+export const fipsnode_send_ipv6: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const fipsnode_send_keepalive: (a: number, b: number, c: number) => [number, number, number, number];
+export const fipsnode_send_keepalives: (a: number) => [number, number, number];
+export const fipsnode_send_message: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const fipsnode_send_ping: (a: number, b: number, c: number) => [number, number, number, number];
+export const fipsnode_session_idle_ms: (a: number, b: number, c: number) => number;
+export const fipsnode_set_ipv6_passthrough: (a: number, b: number) => void;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_exn_store: (a: number) => void;
+export const __externref_table_alloc: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_start: () => void;

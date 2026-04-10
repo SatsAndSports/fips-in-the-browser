@@ -46,6 +46,7 @@ docs: build v86-assets
 	mkdir -p $(DOCS_DIR)
 	cp www/index.html $(DOCS_DIR)/
 	cp -r www/pkg $(DOCS_DIR)/
+	rm -f $(DOCS_DIR)/pkg/.gitignore
 	cp -r www/v86 $(DOCS_DIR)/
 	@echo "docs/ ready for GitHub Pages"
 

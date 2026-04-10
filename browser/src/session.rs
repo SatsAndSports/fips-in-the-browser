@@ -19,6 +19,8 @@ use std::collections::HashMap;
 pub struct SessionInfo {
     pub node_addr: [u8; 16],
     pub status: String,
+    /// Remote peer's npub (available after session established).
+    pub npub: Option<String>,
     /// Seconds since last activity.
     pub idle_secs: u64,
     /// Seconds since session was created.
@@ -52,6 +54,7 @@ struct SessionEntry {
     phase: SessionPhase,
     created_at: u64,
     last_activity: u64,
+    remote_npub: Option<String>,
 }
 
 impl SessionEntry {
@@ -61,6 +64,7 @@ impl SessionEntry {
             phase,
             created_at: now,
             last_activity: now,
+            remote_npub: None,
         }
     }
 
@@ -159,6 +163,7 @@ impl SessionManager {
                 SessionInfo {
                     node_addr: *addr,
                     status: status.to_string(),
+                    npub: entry.remote_npub.clone(),
                     idle_secs: now.saturating_sub(entry.last_activity) / 1000,
                     age_secs: now.saturating_sub(entry.created_at) / 1000,
                 }
@@ -314,15 +319,14 @@ impl SessionManager {
                 let (send_cipher, recv_cipher, remote_pub) = hs.into_transport()?;
                 let remote_npub = identity::pubkey_to_npub(&remote_pub);
 
-                self.sessions.insert(
-                    src_addr,
-                    SessionEntry::new(SessionPhase::Established {
-                        send_cipher,
-                        recv_cipher,
-                        replay: ReplayWindow::new(),
-                        receiver_state: ReceiverState::new(),
-                    }),
-                );
+                let mut new_entry = SessionEntry::new(SessionPhase::Established {
+                    send_cipher,
+                    recv_cipher,
+                    replay: ReplayWindow::new(),
+                    receiver_state: ReceiverState::new(),
+                });
+                new_entry.remote_npub = Some(remote_npub.clone());
+                self.sessions.insert(src_addr, new_entry);
 
                 Ok(SessionEvent {
                     fsp_responses: vec![msg3_fsp],
@@ -355,15 +359,14 @@ impl SessionManager {
                 let (send_cipher, recv_cipher, remote_pub) = hs.into_transport()?;
                 let remote_npub = identity::pubkey_to_npub(&remote_pub);
 
-                self.sessions.insert(
-                    src_addr,
-                    SessionEntry::new(SessionPhase::Established {
-                        send_cipher,
-                        recv_cipher,
-                        replay: ReplayWindow::new(),
-                        receiver_state: ReceiverState::new(),
-                    }),
-                );
+                let mut new_entry = SessionEntry::new(SessionPhase::Established {
+                    send_cipher,
+                    recv_cipher,
+                    replay: ReplayWindow::new(),
+                    receiver_state: ReceiverState::new(),
+                });
+                new_entry.remote_npub = Some(remote_npub.clone());
+                self.sessions.insert(src_addr, new_entry);
 
                 Ok(SessionEvent {
                     fsp_responses: vec![],

@@ -79,16 +79,6 @@
   .handshaking { color: var(--purple); }
   .info-row { font-size: 0.75rem; color: var(--muted); margin-bottom: 0.3rem; word-break: break-all; }
   .info-row span { color: var(--text); }
-  .commands {
-    white-space: pre-wrap;
-    background: #0b0e14;
-    border: 1px solid var(--accent);
-    border-radius: 4px;
-    padding: 0.75rem;
-    font-size: 0.72rem;
-    line-height: 1.5;
-    min-height: 120px;
-  }
   #log {
     white-space: pre-wrap;
     background: #0b0e14;
@@ -104,17 +94,6 @@
   .log-err { color: var(--red); }
   .log-link { color: var(--blue); }
   .log-vm { color: var(--green); }
-  #serialLog {
-    white-space: pre-wrap;
-    background: #0b0e14;
-    border: 1px solid var(--accent);
-    border-radius: 4px;
-    padding: 0.75rem;
-    height: 220px;
-    overflow-y: auto;
-    font-size: 0.72rem;
-    line-height: 1.5;
-  }
   #screen_container {
     min-height: 520px;
     border: 1px solid var(--accent);
@@ -165,58 +144,22 @@
     </div>
 
     <div class="panel">
-      <div class="panel-title">2. Session to Gateway</div>
-      <div>
-        <button class="btn-session" id="btnSession" disabled>Connect Session</button>
-      </div>
-      <div class="status disconnected" id="sessionStatus">No session</div>
-    </div>
-
-    <div class="panel">
       <div class="panel-title">Sessions</div>
       <div id="sessionList" style="font-size: 0.72rem; line-height: 1.6; min-height: 2em; color: var(--muted);">No sessions</div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-title">3. VM</div>
-      <div>
-        <button class="btn-boot" id="btnBoot" disabled>Boot Linux VM</button>
-      </div>
-      <div class="status disconnected" id="vmStatus">VM not started</div>
-      <div class="info-row">Keyboard focus: <span id="vmFocusStatus">page</span></div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-title">VM Paste</div>
-      <label for="pasteText">Text to send to the VM keyboard</label>
-      <input type="text" id="pasteText" placeholder="Type or paste a command..." disabled>
-      <div>
-        <button class="btn-boot" id="btnSendText" disabled>Send to VM</button>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-title">Guest Commands</div>
-      <div class="commands" id="commands">Connect link + session first, then boot the VM to get guest setup commands.</div>
     </div>
 
     <div class="panel">
       <div class="panel-title">Log</div>
       <div id="log"></div>
     </div>
-
-    <div class="panel">
-      <div class="panel-title">Serial Log</div>
-      <div style="margin-bottom: 0.75rem;">
-        <button class="btn-session" id="btnCopySerial">Copy Serial Log</button>
-      </div>
-      <div id="serialLog"></div>
-    </div>
   </div>
 
   <div>
     <div class="panel">
-      <div class="panel-title">VM Screen</div>
+      <div class="panel-title" style="display:flex; justify-content:space-between; align-items:center;">
+        <span>VM Screen</span>
+        <button class="btn-session" id="btnPaste" title="" style="font-size:0.7rem; padding:0.2rem 0.6rem; margin:0;">Paste</button>
+      </div>
       <div id="screen_container" tabindex="0">
         <div></div>
         <canvas style="display:none"></canvas>
@@ -235,25 +178,15 @@ const $url = document.getElementById('url');
 const $gatewayNpub = document.getElementById('gatewayNpub');
 const $gatewayIpv6 = document.getElementById('gatewayIpv6');
 const $btnConnect = document.getElementById('btnConnect');
-const $btnSession = document.getElementById('btnSession');
-const $btnBoot = document.getElementById('btnBoot');
-const $pasteText = document.getElementById('pasteText');
-const $btnSendText = document.getElementById('btnSendText');
 const $linkStatus = document.getElementById('linkStatus');
-const $sessionStatus = document.getElementById('sessionStatus');
-const $vmStatus = document.getElementById('vmStatus');
-const $vmFocusStatus = document.getElementById('vmFocusStatus');
-const $commands = document.getElementById('commands');
 const $log = document.getElementById('log');
-const $serialLog = document.getElementById('serialLog');
-const $btnCopySerial = document.getElementById('btnCopySerial');
 const $screen = document.getElementById('screen_container');
 const $sessionList = document.getElementById('sessionList');
+const $btnPaste = document.getElementById('btnPaste');
 
 let node = null;
 let ws = null;
 let vm = null;
-let sessionDest = null;
 let guestMac = null;
 const gatewayMac = new Uint8Array([0x02, 0x46, 0x49, 0x50, 0x53, 0x01]);
 const pendingVmFrames = [];
@@ -294,13 +227,16 @@ function refreshSessionList() {
     $sessionList.innerHTML = '';
     for (const s of sessions) {
       const addrHex = Array.from(s.node_addr).map(b => b.toString(16).padStart(2, '0')).join('');
-      const shortAddr = addrHex.slice(0, 8) + '...' + addrHex.slice(-4);
+      const shortAddr = addrHex.slice(0, 8);
+      const shortNpub = s.npub ? s.npub.slice(0, 12) + '...' : '';
       const statusColor = s.status === 'established' ? 'var(--green)'
         : s.status === 'initiating' ? 'var(--purple)'
         : 'var(--muted)';
       const idleColor = s.idle_secs > 30 ? 'var(--red)' : 'var(--muted)';
       const row = document.createElement('div');
-      row.innerHTML = `<span style="color:var(--text)">${shortAddr}</span> <span style="color:${statusColor}">${s.status}</span> <span style="color:${idleColor}">idle ${formatDuration(s.idle_secs)}</span> <span style="color:var(--muted)">age ${formatDuration(s.age_secs)}</span>`;
+      const label = shortNpub || shortAddr;
+      row.innerHTML = `<span style="color:var(--text)">${label}</span> <span style="color:${statusColor}">${s.status}</span> <span style="color:${idleColor}">idle ${formatDuration(s.idle_secs)}</span> <span style="color:var(--muted)">age ${formatDuration(s.age_secs)}</span>`;
+      row.title = s.npub || addrHex; // full value on hover
       $sessionList.appendChild(row);
     }
   } catch (e) {
@@ -322,10 +258,6 @@ function log(cls, prefix, text) {
   $log.scrollTop = $log.scrollHeight;
 }
 
-function logSerial(text) {
-  $serialLog.textContent += text;
-  $serialLog.scrollTop = $serialLog.scrollHeight;
-}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -338,7 +270,6 @@ function setStatus(el, text, cls) {
 
 function setVmFocus(focused) {
   vmFocused = focused;
-  $vmFocusStatus.textContent = focused ? 'vm' : 'page';
   $screen.classList.toggle('focused', focused);
   if (vm && typeof vm.keyboard_set_status === 'function') {
     vm.keyboard_set_status(focused);
@@ -350,42 +281,11 @@ function setVmFocus(focused) {
 
 function isVmUiTarget(target) {
   if (!target) return false;
-  const vmRelated = [
-    $screen,
-    $pasteText,
-    $btnSendText,
-    $btnCopySerial,
-    $commands,
-    $serialLog,
-  ];
-  return vmRelated.some(el => el && el.contains && el.contains(target));
+  return $screen && $screen.contains && $screen.contains(target);
 }
 
 function hashParams() {
   return new URLSearchParams(window.location.hash.slice(1));
-}
-
-function updateCommands() {
-  if (!$gatewayIpv6.textContent || $gatewayIpv6.textContent === '-' || !$myIpv6.textContent) {
-    return;
-  }
-
-  const guestIp = $myIpv6.textContent;
-  const gatewayIp = $gatewayIpv6.textContent;
-  const gatewayMacText = Array.from(gatewayMac).map(x => x.toString(16).padStart(2, '0')).join(':');
-
-  const gatewayNpubVal = $gatewayNpub.value.trim();
-  $commands.textContent = [
-    '# In the VM shell, try:',
-    `ifconfig eth0 up`,
-    `ifconfig eth0 add ${guestIp}/8`,
-    `echo "nameserver ${gatewayIp}" > /etc/resolv.conf`,
-    '',
-    `# The browser bridge answers NDP + DNS for all fd::/8`,
-    `# Sessions are established lazily on first ping`,
-    `ping -6 ${gatewayNpubVal}.fips`,
-    `ping -6 <other-npub>.fips`,
-  ].join('\n');
 }
 
 function connectLink() {
@@ -424,9 +324,7 @@ function connectLink() {
       if (result.msg_type === 'msg2') {
         log('log-link', '[link]', `← ${result.info}`);
         setStatus($linkStatus, 'Link Established', 'connected');
-        $btnSession.disabled = false;
         // Boot VM immediately — sessions are established lazily on first ping
-        $btnBoot.disabled = false;
         if (!vm) {
           bootVm();
         }
@@ -448,9 +346,6 @@ function connectLink() {
               delete pendingIpv6[peerNpub];
             }
           }
-        }
-        if (result.session_peer_npub && node.is_session_established(result.session_peer_npub)) {
-          setStatus($sessionStatus, 'Session active', 'connected');
         }
       } else if (result.msg_type === 'session_ipv6') {
         const packet = new Uint8Array(result.payload);
@@ -479,10 +374,7 @@ function connectLink() {
   ws.onclose = () => {
     log('log-info', '[link]', 'WebSocket closed.');
     setStatus($linkStatus, 'Disconnected', 'disconnected');
-    setStatus($sessionStatus, 'No session', 'disconnected');
     $btnConnect.disabled = false;
-    $btnSession.disabled = true;
-    $btnBoot.disabled = true;
     ws = null;
   };
 
@@ -491,31 +383,6 @@ function connectLink() {
     setStatus($linkStatus, 'Disconnected', 'disconnected');
     $btnConnect.disabled = false;
   };
-}
-
-function connectGatewaySession() {
-  const gateway = $gatewayNpub.value.trim();
-  if (!gateway) {
-    log('log-err', '[sess]', 'Gateway npub is required.');
-    return;
-  }
-  sessionDest = gateway;
-  try {
-    const pkt = node.connect_session(gateway);
-    ws.send(pkt);
-    setStatus($sessionStatus, 'Initiating session...', 'handshaking');
-    log('log-link', '[sess]', `Sent SessionSetup (${pkt.length} bytes on wire)`);
-    $btnSession.disabled = true;
-  } catch (e) {
-    if (String(e).includes('already established')) {
-      setStatus($sessionStatus, 'Session Established', 'connected');
-      $btnBoot.disabled = false;
-      log('log-info', '[sess]', 'Session already established.');
-    } else {
-      log('log-err', '[sess]', `Session initiation failed: ${e}`);
-      setStatus($sessionStatus, 'Failed', 'disconnected');
-    }
-  }
 }
 
 function bootVm() {
@@ -527,7 +394,6 @@ function bootVm() {
 
   node.set_ipv6_passthrough(true);
   log('log-vm', '[vm]', 'Booting Buildroot VM...');
-  setStatus($vmStatus, 'Booting...', 'handshaking');
 
   vm = new V86({
     wasm_path: 'v86/build/v86.wasm',
@@ -542,11 +408,8 @@ function bootVm() {
   });
 
   vm.add_listener('emulator-ready', () => {
-    setStatus($vmStatus, 'VM running', 'connected');
-    log('log-vm', '[vm]', 'VM boot started. Click the screen and use the guest commands panel.');
+    log('log-vm', '[vm]', 'VM running.');
     setVmFocus(false);
-    $pasteText.disabled = false;
-    $btnSendText.disabled = false;
     uploadInitScript();
   });
 
@@ -555,7 +418,6 @@ function bootVm() {
     if (char !== '\r') {
       serialBuffer += char;
       serialTail = (serialTail + char).slice(-32);
-      logSerial(char);
       maybeRunVmInitCommands();
     }
   });
@@ -568,7 +430,6 @@ function bootVm() {
     }
   });
 
-  updateCommands();
 }
 
 $screen.addEventListener('mousedown', () => {
@@ -1053,8 +914,7 @@ if ($gatewayNpub.value.trim()) {
     if (ipv6Bytes) {
       dnsCache[ipv6BytesToHex(ipv6Bytes)] = resolved.npub;
     }
-    updateCommands();
-  } catch (_) {}
+    } catch (_) {}
 }
 
 if ($url.value.trim() && $gatewayNpub.value.trim()) {
@@ -1074,40 +934,25 @@ $btnConnect.addEventListener('click', () => {
   } catch (_) {
     $gatewayIpv6.textContent = '-';
   }
-  updateCommands();
   connectLink();
 });
 
-$btnSession.addEventListener('click', connectGatewaySession);
-$btnBoot.addEventListener('click', bootVm);
-
-$btnCopySerial.addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText($serialLog.textContent);
-    log('log-info', '[vm]', 'Copied serial log to clipboard.');
-  } catch (e) {
-    log('log-err', '[vm]', `Copy serial log failed: ${e}`);
-  }
-});
-
-$btnSendText.addEventListener('click', async () => {
+$btnPaste.addEventListener('click', async () => {
   if (!vm) {
     log('log-err', '[vm]', 'VM is not running.');
     return;
   }
-  const text = $pasteText.value;
-  if (!text) {
-    log('log-err', '[vm]', 'No text to send to VM.');
-    return;
-  }
   try {
+    const text = await navigator.clipboard.readText();
+    if (!text) return;
     setVmFocus(true);
     await vm.keyboard_send_text(text, 5);
-    log('log-vm', '[vm]', `Sent ${text.length} chars to VM keyboard.`);
+    log('log-vm', '[vm]', `Pasted ${text.length} chars into VM.`);
   } catch (e) {
-    log('log-err', '[vm]', `Send-to-VM failed: ${e}`);
+    log('log-err', '[vm]', `Paste failed: ${e}`);
   }
 });
+
 </script>
 </body>
 </html>

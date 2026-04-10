@@ -293,12 +293,24 @@ function stopSessionKeepalive() {
   }
 }
 
+function formatDuration(secs) {
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m${secs % 60}s`;
+  return `${Math.floor(secs / 3600)}h${Math.floor((secs % 3600) / 60)}m`;
+}
+
 function refreshSessionList() {
   if (!node) {
     $sessionList.textContent = 'No sessions';
     return;
   }
   try {
+    // Prune sessions idle > 60s (native timeout is 90s)
+    const pruned = node.prune_idle_sessions(60);
+    if (pruned > 0) {
+      log('log-vm', '[sess]', `Pruned ${pruned} idle session(s)`);
+    }
+
     const sessions = node.list_sessions();
     if (!sessions || sessions.length === 0) {
       $sessionList.textContent = 'No sessions';
@@ -311,8 +323,9 @@ function refreshSessionList() {
       const statusColor = s.status === 'established' ? 'var(--green)'
         : s.status === 'initiating' ? 'var(--purple)'
         : 'var(--muted)';
+      const idleColor = s.idle_secs > 30 ? 'var(--red)' : 'var(--muted)';
       const row = document.createElement('div');
-      row.innerHTML = `<span style="color:var(--text)">${shortAddr}</span> <span style="color:${statusColor}">${s.status}</span>`;
+      row.innerHTML = `<span style="color:var(--text)">${shortAddr}</span> <span style="color:${statusColor}">${s.status}</span> <span style="color:${idleColor}">idle ${formatDuration(s.idle_secs)}</span> <span style="color:var(--muted)">age ${formatDuration(s.age_secs)}</span>`;
       $sessionList.appendChild(row);
     }
   } catch (e) {

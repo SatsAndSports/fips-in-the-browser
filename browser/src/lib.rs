@@ -411,6 +411,12 @@ impl FipsNode {
         serde_wasm_bindgen::to_value(&packets).map_err(|e| JsValue::from_str(&format!("{e}")))
     }
 
+    /// Remove sessions idle for more than `max_idle_secs` seconds.
+    /// Returns the number of sessions pruned.
+    pub fn prune_idle_sessions(&mut self, max_idle_secs: u32) -> usize {
+        self.sessions.prune_idle(max_idle_secs as u64 * 1000)
+    }
+
     /// List all sessions and their states (for UI display).
     pub fn list_sessions(&self) -> Result<JsValue, JsValue> {
         let sessions = self.sessions.list_sessions();

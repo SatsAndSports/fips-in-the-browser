@@ -19,6 +19,10 @@ use std::collections::HashMap;
 pub struct SessionInfo {
     pub node_addr: [u8; 16],
     pub status: String,
+    /// Seconds since last activity.
+    pub idle_secs: u64,
+    /// Seconds since session was created.
+    pub age_secs: u64,
 }
 
 /// Default TTL for SessionDatagrams.
@@ -28,7 +32,7 @@ const DEFAULT_TTL: u8 = 64;
 const DEFAULT_PATH_MTU: u16 = u16::MAX;
 
 /// A session in one of its lifecycle states.
-enum SessionState {
+enum SessionPhase {
     /// Initiator: sent msg1, waiting for msg2 (SessionAck).
     Initiating(HandshakeXK),
     /// Responder: sent msg2, waiting for msg3 (SessionMsg3).
@@ -43,9 +47,39 @@ enum SessionState {
     },
 }
 
+/// Session entry with lifecycle phase and activity tracking.
+struct SessionEntry {
+    phase: SessionPhase,
+    created_at: u64,
+    last_activity: u64,
+}
+
+impl SessionEntry {
+    fn new(phase: SessionPhase) -> Self {
+        let now = wire::current_time_ms();
+        Self {
+            phase,
+            created_at: now,
+            last_activity: now,
+        }
+    }
+
+    fn touch(&mut self) {
+        self.last_activity = wire::current_time_ms();
+    }
+
+    fn is_established(&self) -> bool {
+        matches!(self.phase, SessionPhase::Established { .. })
+    }
+
+    fn idle_ms(&self) -> u64 {
+        wire::current_time_ms().saturating_sub(self.last_activity)
+    }
+}
+
 /// Manages all active sessions, keyed by remote NodeAddr.
 pub struct SessionManager {
-    sessions: HashMap<[u8; 16], SessionState>,
+    sessions: HashMap<[u8; 16], SessionEntry>,
     /// Our own coordinates (root, depth 0 — just our own NodeAddr).
     our_coords: Vec<[u8; 16]>,
     /// Our NodeAddr.
@@ -98,19 +132,15 @@ impl SessionManager {
 
     /// Check if a session with the given dest is established.
     pub fn is_established(&self, dest: &[u8; 16]) -> bool {
-        matches!(
-            self.sessions.get(dest),
-            Some(SessionState::Established { .. })
-        )
+        self.sessions.get(dest).map_or(false, |e| e.is_established())
     }
 
     /// Return all established session destination addresses.
     pub fn established_destinations(&self) -> Vec<[u8; 16]> {
         self.sessions
             .iter()
-            .filter_map(|(addr, state)| match state {
-                SessionState::Established { .. } => Some(*addr),
-                _ => None,
+            .filter_map(|(addr, entry)| {
+                if entry.is_established() { Some(*addr) } else { None }
             })
             .collect()
     }
@@ -119,18 +149,29 @@ impl SessionManager {
     pub fn list_sessions(&self) -> Vec<SessionInfo> {
         self.sessions
             .iter()
-            .map(|(addr, state)| {
-                let status = match state {
-                    SessionState::Initiating(_) => "initiating",
-                    SessionState::AwaitingMsg3(_) => "awaiting_msg3",
-                    SessionState::Established { .. } => "established",
+            .map(|(addr, entry)| {
+                let status = match &entry.phase {
+                    SessionPhase::Initiating(_) => "initiating",
+                    SessionPhase::AwaitingMsg3(_) => "awaiting_msg3",
+                    SessionPhase::Established { .. } => "established",
                 };
+                let now = wire::current_time_ms();
                 SessionInfo {
                     node_addr: *addr,
                     status: status.to_string(),
+                    idle_secs: now.saturating_sub(entry.last_activity) / 1000,
+                    age_secs: now.saturating_sub(entry.created_at) / 1000,
                 }
             })
             .collect()
+    }
+
+    /// Remove sessions that have been idle longer than the given threshold.
+    /// Returns the number of sessions pruned.
+    pub fn prune_idle(&mut self, max_idle_ms: u64) -> usize {
+        let before = self.sessions.len();
+        self.sessions.retain(|_, entry| entry.idle_ms() < max_idle_ms);
+        before - self.sessions.len()
     }
 
     // ========================================================================
@@ -148,14 +189,11 @@ impl SessionManager {
         local_epoch: [u8; 8],
         our_secret: &k256::SecretKey,
     ) -> Result<Vec<u8>, String> {
-        if let Some(state) = self.sessions.get(&dest_addr) {
-            return Err(match state {
-                SessionState::Established { .. } => {
-                    "session already established for this destination".into()
-                }
-                SessionState::Initiating(_) | SessionState::AwaitingMsg3(_) => {
-                    "session handshake already in progress for this destination".into()
-                }
+        if let Some(entry) = self.sessions.get(&dest_addr) {
+            return Err(if entry.is_established() {
+                "session already established for this destination".into()
+            } else {
+                "session handshake already in progress for this destination".into()
             });
         }
 
@@ -167,7 +205,7 @@ impl SessionManager {
         let setup = wire::build_session_setup(&self.our_coords, dest_coords, &msg1);
 
         self.sessions
-            .insert(dest_addr, SessionState::Initiating(hs));
+            .insert(dest_addr, SessionEntry::new(SessionPhase::Initiating(hs)));
 
         Ok(setup)
     }
@@ -232,7 +270,7 @@ impl SessionManager {
 
         // Store as AwaitingMsg3
         self.sessions
-            .insert(src_addr, SessionState::AwaitingMsg3(hs));
+            .insert(src_addr, SessionEntry::new(SessionPhase::AwaitingMsg3(hs)));
 
         Ok(SessionEvent {
             fsp_responses: vec![ack],
@@ -249,13 +287,13 @@ impl SessionManager {
         let (_src_coords, _dest_coords, hs_payload) =
             wire::parse_session_ack_body(body).ok_or("invalid SessionAck body")?;
 
-        let state = self
+        let entry = self
             .sessions
             .remove(&src_addr)
             .ok_or("no session for this source (unexpected SessionAck)")?;
 
-        match state {
-            SessionState::Initiating(mut hs) => {
+        match entry.phase {
+            SessionPhase::Initiating(mut hs) => {
                 hs.read_msg2(&hs_payload)?;
                 let msg3 = hs.write_msg3()?;
 
@@ -268,12 +306,12 @@ impl SessionManager {
 
                 self.sessions.insert(
                     src_addr,
-                    SessionState::Established {
+                    SessionEntry::new(SessionPhase::Established {
                         send_cipher,
                         recv_cipher,
                         replay: ReplayWindow::new(),
                         receiver_state: ReceiverState::new(),
-                    },
+                    }),
                 );
 
                 Ok(SessionEvent {
@@ -285,8 +323,8 @@ impl SessionManager {
                     kind: SessionEventKind::Ack,
                 })
             }
-            other => {
-                self.sessions.insert(src_addr, other);
+            other_phase => {
+                self.sessions.insert(src_addr, SessionEntry { phase: other_phase, ..entry });
                 Err("received SessionAck but not in Initiating state".into())
             }
         }
@@ -296,25 +334,25 @@ impl SessionManager {
     fn handle_msg3(&mut self, src_addr: [u8; 16], body: &[u8]) -> Result<SessionEvent, String> {
         let hs_payload = wire::parse_session_msg3_body(body).ok_or("invalid SessionMsg3 body")?;
 
-        let state = self
+        let entry = self
             .sessions
             .remove(&src_addr)
             .ok_or("no session for this source (unexpected SessionMsg3)")?;
 
-        match state {
-            SessionState::AwaitingMsg3(mut hs) => {
+        match entry.phase {
+            SessionPhase::AwaitingMsg3(mut hs) => {
                 hs.read_msg3(&hs_payload)?;
                 let (send_cipher, recv_cipher, remote_pub) = hs.into_transport()?;
                 let remote_npub = identity::pubkey_to_npub(&remote_pub);
 
                 self.sessions.insert(
                     src_addr,
-                    SessionState::Established {
+                    SessionEntry::new(SessionPhase::Established {
                         send_cipher,
                         recv_cipher,
                         replay: ReplayWindow::new(),
                         receiver_state: ReceiverState::new(),
-                    },
+                    }),
                 );
 
                 Ok(SessionEvent {
@@ -326,8 +364,8 @@ impl SessionManager {
                     kind: SessionEventKind::Msg3,
                 })
             }
-            other => {
-                self.sessions.insert(src_addr, other);
+            other_phase => {
+                self.sessions.insert(src_addr, SessionEntry { phase: other_phase, ..entry });
                 Err("received SessionMsg3 but not in AwaitingMsg3 state".into())
             }
         }
@@ -360,13 +398,15 @@ impl SessionManager {
 
         let ciphertext = &fsp_payload[data_offset..];
 
-        let state = self
+        let entry = self
             .sessions
             .get_mut(&src_addr)
             .ok_or("no established session for this source")?;
 
-        match state {
-            SessionState::Established {
+        entry.touch();
+
+        match &mut entry.phase {
+            SessionPhase::Established {
                 recv_cipher,
                 replay,
                 receiver_state,
@@ -483,13 +523,15 @@ impl SessionManager {
         dst_port: u16,
         payload: &[u8],
     ) -> Result<Vec<u8>, String> {
-        let state = self
+        let entry = self
             .sessions
             .get_mut(dest_addr)
             .ok_or("no established session for this destination")?;
 
-        match state {
-            SessionState::Established { send_cipher, .. } => {
+        entry.touch();
+
+        match &mut entry.phase {
+            SessionPhase::Established { send_cipher, .. } => {
                 let timestamp = wire::current_timestamp_ms();
                 let inner_header = wire::build_fsp_inner(timestamp, wire::FSP_MSG_TYPE_DATA, 0);
 
@@ -526,13 +568,13 @@ impl SessionManager {
         dest_addr: &[u8; 16],
         inner_payload: &[u8],
     ) -> Result<Vec<u8>, String> {
-        let state = self
+        let entry = self
             .sessions
             .get_mut(dest_addr)
             .ok_or("no established session for this destination")?;
 
-        match state {
-            SessionState::Established { send_cipher, .. } => {
+        match &mut entry.phase {
+            SessionPhase::Established { send_cipher, .. } => {
                 let timestamp = wire::current_timestamp_ms();
                 // Build inner: [timestamp:4 LE][msg_type + payload...]
                 let mut inner = Vec::with_capacity(4 + inner_payload.len());
@@ -562,13 +604,13 @@ impl SessionManager {
         dest_addr: &[u8; 16],
         now_ms: u64,
     ) -> Result<Vec<u8>, String> {
-        let state = self
+        let entry = self
             .sessions
             .get_mut(dest_addr)
             .ok_or("no session for this destination")?;
 
-        let report_payload = match state {
-            SessionState::Established { receiver_state, .. } => receiver_state.build_report(now_ms),
+        let report_payload = match &mut entry.phase {
+            SessionPhase::Established { receiver_state, .. } => receiver_state.build_report(now_ms),
             _ => return Err("session not established".into()),
         };
 

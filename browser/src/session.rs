@@ -528,7 +528,8 @@ impl SessionManager {
             .get_mut(dest_addr)
             .ok_or("no established session for this destination")?;
 
-        entry.touch();
+        // Don't touch() on send — idle timer tracks received data only,
+        // so one-way-dead sessions (sending but no replies) get pruned.
 
         match &mut entry.phase {
             SessionPhase::Established { send_cipher, .. } => {

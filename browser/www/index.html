@@ -331,8 +331,16 @@ function connectLink() {
       } else if (result.msg_type === 'session') {
         log('log-link', '[sess]', `← ${result.info}`);
         if (result.session_peer_npub) {
-          // Flush any queued IPv6 packets for this newly established session
           const peerNpub = result.session_peer_npub;
+          // Seed DNS cache so we can route IPv6 to/from this peer
+          try {
+            const resolved = node.resolve_fips_name(`${peerNpub}.fips`);
+            const ipv6Bytes = parseIpv6Text(resolved.ipv6);
+            if (ipv6Bytes) {
+              dnsCache[ipv6BytesToHex(ipv6Bytes)] = peerNpub;
+            }
+          } catch (_) {}
+          // Flush any queued IPv6 packets for this newly established session
           if (node.is_session_established(peerNpub)) {
             const queued = pendingIpv6[peerNpub];
             if (queued && queued.length > 0) {

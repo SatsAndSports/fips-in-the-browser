@@ -179,6 +179,11 @@ impl SessionManager {
         before - self.sessions.len()
     }
 
+    /// Get the npub for a session peer (if established).
+    pub fn peer_npub(&self, dest: &[u8; 16]) -> Option<&str> {
+        self.sessions.get(dest).and_then(|e| e.remote_npub.as_deref())
+    }
+
     /// Get the receive-idle time for a specific session.
     pub fn session_idle_ms(&self, dest: &[u8; 16]) -> Option<u64> {
         self.sessions.get(dest).map(|e| e.idle_ms())

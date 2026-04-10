@@ -817,9 +817,11 @@ impl FipsNode {
             } else if port == wire::FSP_PORT_IPV6_SHIM {
                 let src_ipv6 = ipv6::ipv6_from_node_addr(&event.from);
                 let dst_ipv6 = ipv6::ipv6_from_node_addr(self.identity.node_addr());
+                let peer_npub = self.sessions.peer_npub(&event.from).map(|s| s.to_string());
                 if let Some(packet) = ipv6::decompress_ipv6(&data, src_ipv6, dst_ipv6) {
                     if self.raw_ipv6_passthrough {
                         result.msg_type = "session_ipv6".to_string();
+                        result.session_peer_npub = peer_npub.clone();
                         result.payload = Some(packet);
                         result.info = Some(format!(
                             "IPv6 shim packet from {}",

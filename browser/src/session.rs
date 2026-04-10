@@ -11,7 +11,15 @@ use crate::mmp::ReceiverState;
 use crate::noise_xk::HandshakeXK;
 use crate::replay::ReplayWindow;
 use crate::wire;
+use serde::Serialize;
 use std::collections::HashMap;
+
+/// Session info for UI display.
+#[derive(Serialize)]
+pub struct SessionInfo {
+    pub node_addr: [u8; 16],
+    pub status: String,
+}
 
 /// Default TTL for SessionDatagrams.
 const DEFAULT_TTL: u8 = 64;
@@ -103,6 +111,24 @@ impl SessionManager {
             .filter_map(|(addr, state)| match state {
                 SessionState::Established { .. } => Some(*addr),
                 _ => None,
+            })
+            .collect()
+    }
+
+    /// Return a snapshot of all sessions with their state for UI display.
+    pub fn list_sessions(&self) -> Vec<SessionInfo> {
+        self.sessions
+            .iter()
+            .map(|(addr, state)| {
+                let status = match state {
+                    SessionState::Initiating(_) => "initiating",
+                    SessionState::AwaitingMsg3(_) => "awaiting_msg3",
+                    SessionState::Established { .. } => "established",
+                };
+                SessionInfo {
+                    node_addr: *addr,
+                    status: status.to_string(),
+                }
             })
             .collect()
     }

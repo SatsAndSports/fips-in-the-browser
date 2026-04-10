@@ -173,6 +173,11 @@
     </div>
 
     <div class="panel">
+      <div class="panel-title">Sessions</div>
+      <div id="sessionList" style="font-size: 0.72rem; line-height: 1.6; min-height: 2em; color: var(--muted);">No sessions</div>
+    </div>
+
+    <div class="panel">
       <div class="panel-title">3. VM</div>
       <div>
         <button class="btn-boot" id="btnBoot" disabled>Boot Linux VM</button>
@@ -243,6 +248,7 @@ const $log = document.getElementById('log');
 const $serialLog = document.getElementById('serialLog');
 const $btnCopySerial = document.getElementById('btnCopySerial');
 const $screen = document.getElementById('screen_container');
+const $sessionList = document.getElementById('sessionList');
 
 let node = null;
 let ws = null;
@@ -259,6 +265,8 @@ let vmSessionAutoStarted = false;
 let vmInitTriggered = false;
 let sessionKeepaliveTimer = null;
 let vmFocused = false;
+const dnsCache = {};      // hex(ipv6_bytes) → npub
+const pendingIpv6 = {};   // npub → [Uint8Array payload, ...]
 
 function startSessionKeepalive() {
   if (sessionKeepaliveTimer) return;
@@ -284,6 +292,35 @@ function stopSessionKeepalive() {
     sessionKeepaliveTimer = null;
   }
 }
+
+function refreshSessionList() {
+  if (!node) {
+    $sessionList.textContent = 'No sessions';
+    return;
+  }
+  try {
+    const sessions = node.list_sessions();
+    if (!sessions || sessions.length === 0) {
+      $sessionList.textContent = 'No sessions';
+      return;
+    }
+    $sessionList.innerHTML = '';
+    for (const s of sessions) {
+      const addrHex = Array.from(s.node_addr).map(b => b.toString(16).padStart(2, '0')).join('');
+      const shortAddr = addrHex.slice(0, 8) + '...' + addrHex.slice(-4);
+      const statusColor = s.status === 'established' ? 'var(--green)'
+        : s.status === 'initiating' ? 'var(--purple)'
+        : 'var(--muted)';
+      const row = document.createElement('div');
+      row.innerHTML = `<span style="color:var(--text)">${shortAddr}</span> <span style="color:${statusColor}">${s.status}</span>`;
+      $sessionList.appendChild(row);
+    }
+  } catch (e) {
+    $sessionList.textContent = `Error: ${e}`;
+  }
+}
+
+setInterval(refreshSessionList, 2000);
 
 function utcTime() {
   return new Date().toISOString().slice(11);
@@ -407,7 +444,25 @@ function connectLink() {
       } else if (result.msg_type === 'session') {
         log('log-link', '[sess]', `← ${result.info}`);
         if (result.session_peer_npub) {
-          sessionDest = result.session_peer_npub;
+          // Track the gateway session separately
+          if (!sessionDest) {
+            sessionDest = result.session_peer_npub;
+          }
+          // Flush any queued IPv6 packets for this newly established session
+          const peerNpub = result.session_peer_npub;
+          if (node.is_session_established(peerNpub)) {
+            const queued = pendingIpv6[peerNpub];
+            if (queued && queued.length > 0) {
+              for (const pktPayload of queued) {
+                try {
+                  const pkt = node.send_ipv6(peerNpub, pktPayload);
+                  ws.send(pkt);
+                } catch (e) { /* stale packet */ }
+              }
+              log('log-vm', '[sess]', `Flushed ${queued.length} queued packet(s) to ${peerNpub.slice(0, 15)}...`);
+              delete pendingIpv6[peerNpub];
+            }
+          }
         }
         if (sessionDest && node.is_session_established(sessionDest)) {
           setStatus($sessionStatus, 'Session Established', 'connected');
@@ -652,19 +707,46 @@ function handleGuestEthernet(frame) {
     // Fall through to forward if we couldn't handle it
   }
 
-  // Forward only FIPS IPv6 packets for now.
+  // Forward only FIPS IPv6 packets (fd::/8).
   if (payload[24] !== 0xfd) {
     return;
   }
 
-  if (!ws || !sessionDest || !node.is_session_established(sessionDest)) {
-    log('log-err', '[vm]', 'Guest sent IPv6 packet but no gateway session is established.');
+  if (!ws || !node.is_established()) {
+    log('log-err', '[vm]', 'Guest sent IPv6 packet but link is not established.');
     return;
   }
 
-  const pkt = node.send_ipv6(sessionDest, payload);
+  // Look up destination npub from DNS cache
+  const destKey = ipv6BytesToHex(payload.slice(24, 40));
+  const destNpub = dnsCache[destKey];
+
+  if (!destNpub) {
+    log('log-err', '[vm]', `No DNS cache for dest ${destKey.slice(0, 8)}...`);
+    return;
+  }
+
+  // Ensure we have an end-to-end session with the destination
+  if (!node.is_session_established(destNpub)) {
+    // Initiate session if not already in progress
+    try {
+      const setupPkt = node.connect_session(destNpub);
+      ws.send(setupPkt);
+      log('log-vm', '[sess]', `Initiating session to ${destNpub.slice(0, 15)}...`);
+    } catch (e) {
+      if (!String(e).includes('already')) {
+        log('log-err', '[sess]', `Session initiation failed: ${e}`);
+      }
+    }
+    // Queue packet for when session establishes
+    if (!pendingIpv6[destNpub]) pendingIpv6[destNpub] = [];
+    pendingIpv6[destNpub].push(new Uint8Array(payload));
+    return;
+  }
+
+  // Session established — send through it
+  const pkt = node.send_ipv6(destNpub, payload);
   ws.send(pkt);
-  log('log-vm', '[vm]', `→ Guest IPv6 packet (${payload.length} bytes)`);
 }
 
 function injectIpv6ToVm(ipv6Packet) {
@@ -833,15 +915,22 @@ function handleGuestDnsQuery(ipv6Packet) {
 
   const dnsBytes = new Uint8Array(dnsResponse);
 
-  // Log what we resolved
+  // Log what we resolved and populate DNS cache for session routing
   try {
-    // Quick peek: if answers > 0, log the query name
     const qdcount = (udpPayload[4] << 8) | udpPayload[5];
     if (qdcount > 0) {
       const qname = parseDnsName(udpPayload, 12);
       const ancount = (dnsBytes[6] << 8) | dnsBytes[7];
       if (ancount > 0) {
         log('log-vm', '[dns]', `Resolved ${qname} (${ancount} answer${ancount > 1 ? 's' : ''})`);
+        // Cache IPv6 → npub so we can route packets to the right session
+        try {
+          const resolved = node.resolve_fips_name(qname);
+          const ipv6Bytes = parseIpv6Text(resolved.ipv6);
+          if (ipv6Bytes) {
+            dnsCache[ipv6BytesToHex(ipv6Bytes)] = resolved.npub;
+          }
+        } catch (_) {}
       } else {
         log('log-vm', '[dns]', `Query for ${qname} — no answers`);
       }
@@ -924,6 +1013,15 @@ function parseDnsName(buf, offset) {
   return labels.join('.');
 }
 
+/** Convert 16 raw IPv6 bytes to a hex key for dnsCache lookups. */
+function ipv6BytesToHex(bytes) {
+  let hex = '';
+  for (let i = 0; i < 16; i++) {
+    hex += bytes[i].toString(16).padStart(2, '0');
+  }
+  return hex;
+}
+
 function bytesEqual(a, b) {
   if (!a || !b || a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
@@ -952,6 +1050,10 @@ if ($gatewayNpub.value.trim()) {
   try {
     const resolved = node.resolve_fips_name(`${$gatewayNpub.value.trim()}.fips`);
     $gatewayIpv6.textContent = resolved.ipv6;
+    const ipv6Bytes = parseIpv6Text(resolved.ipv6);
+    if (ipv6Bytes) {
+      dnsCache[ipv6BytesToHex(ipv6Bytes)] = resolved.npub;
+    }
     updateCommands();
   } catch (_) {}
 }
@@ -965,6 +1067,11 @@ $btnConnect.addEventListener('click', () => {
   try {
     const resolved = node.resolve_fips_name(`${$gatewayNpub.value.trim()}.fips`);
     $gatewayIpv6.textContent = resolved.ipv6;
+    // Pre-seed DNS cache so gateway pings route to gateway session
+    const ipv6Bytes = parseIpv6Text(resolved.ipv6);
+    if (ipv6Bytes) {
+      dnsCache[ipv6BytesToHex(ipv6Bytes)] = resolved.npub;
+    }
   } catch (_) {
     $gatewayIpv6.textContent = '-';
   }

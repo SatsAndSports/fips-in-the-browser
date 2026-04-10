@@ -411,6 +411,12 @@ impl FipsNode {
         serde_wasm_bindgen::to_value(&packets).map_err(|e| JsValue::from_str(&format!("{e}")))
     }
 
+    /// List all sessions and their states (for UI display).
+    pub fn list_sessions(&self) -> Result<JsValue, JsValue> {
+        let sessions = self.sessions.list_sessions();
+        serde_wasm_bindgen::to_value(&sessions).map_err(|e| JsValue::from_str(&format!("{e}")))
+    }
+
     /// Check if a session is established with a given npub.
     pub fn is_session_established(&self, dest_npub: &str) -> bool {
         if let Ok(x_only) = identity::decode_npub(dest_npub) {

@@ -111,6 +111,22 @@
     font: 14px monospace;
     line-height: 14px;
   }
+  .kb { margin-top: 0.75rem; user-select: none; }
+  .kb-row { display: flex; gap: 3px; margin-bottom: 3px; }
+  .kb-row kbd {
+    display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+    min-width: 28px; height: 32px; padding: 0 4px;
+    background: #1e2330; border: 1px solid var(--accent); border-radius: 4px;
+    font: 10px var(--mono); color: var(--muted); line-height: 1.1; text-align: center;
+    flex-shrink: 0;
+  }
+  .kb-row kbd .sh { font-size: 8px; color: #6b7280; }
+  .kb-row kbd .pr { font-size: 11px; color: var(--text); }
+  .kb-row .w15 { min-width: 46px; }
+  .kb-row .w175 { min-width: 54px; }
+  .kb-row .w2  { min-width: 60px; }
+  .kb-row .w25 { min-width: 74px; }
+  .kb-row .space { flex: 1; }
   @media (max-width: 980px) {
     .layout { grid-template-columns: 1fr; }
   }
@@ -163,6 +179,56 @@
       <div id="screen_container" tabindex="0">
         <div></div>
         <canvas style="display:none"></canvas>
+      </div>
+      <div class="kb">
+        <div class="kb-row">
+          <kbd><span class="sh">~</span><span class="pr">`</span></kbd>
+          <kbd><span class="sh">!</span><span class="pr">1</span></kbd>
+          <kbd><span class="sh">@</span><span class="pr">2</span></kbd>
+          <kbd><span class="sh">#</span><span class="pr">3</span></kbd>
+          <kbd><span class="sh">$</span><span class="pr">4</span></kbd>
+          <kbd><span class="sh">%</span><span class="pr">5</span></kbd>
+          <kbd><span class="sh">^</span><span class="pr">6</span></kbd>
+          <kbd><span class="sh">&amp;</span><span class="pr">7</span></kbd>
+          <kbd><span class="sh">*</span><span class="pr">8</span></kbd>
+          <kbd><span class="sh">(</span><span class="pr">9</span></kbd>
+          <kbd><span class="sh">)</span><span class="pr">0</span></kbd>
+          <kbd><span class="sh">_</span><span class="pr">-</span></kbd>
+          <kbd><span class="sh">+</span><span class="pr">=</span></kbd>
+          <kbd class="w2"><span class="pr">Bksp</span></kbd>
+        </div>
+        <div class="kb-row">
+          <kbd class="w15"><span class="pr">Tab</span></kbd>
+          <kbd><span class="pr">Q</span></kbd><kbd><span class="pr">W</span></kbd><kbd><span class="pr">E</span></kbd><kbd><span class="pr">R</span></kbd><kbd><span class="pr">T</span></kbd>
+          <kbd><span class="pr">Y</span></kbd><kbd><span class="pr">U</span></kbd><kbd><span class="pr">I</span></kbd><kbd><span class="pr">O</span></kbd><kbd><span class="pr">P</span></kbd>
+          <kbd><span class="sh">{</span><span class="pr">[</span></kbd>
+          <kbd><span class="sh">}</span><span class="pr">]</span></kbd>
+          <kbd class="w15"><span class="sh">|</span><span class="pr">\</span></kbd>
+        </div>
+        <div class="kb-row">
+          <kbd class="w175"><span class="pr">Caps</span></kbd>
+          <kbd><span class="pr">A</span></kbd><kbd><span class="pr">S</span></kbd><kbd><span class="pr">D</span></kbd><kbd><span class="pr">F</span></kbd><kbd><span class="pr">G</span></kbd>
+          <kbd><span class="pr">H</span></kbd><kbd><span class="pr">J</span></kbd><kbd><span class="pr">K</span></kbd><kbd><span class="pr">L</span></kbd>
+          <kbd><span class="sh">:</span><span class="pr">;</span></kbd>
+          <kbd><span class="sh">"</span><span class="pr">'</span></kbd>
+          <kbd class="w25"><span class="pr">Enter</span></kbd>
+        </div>
+        <div class="kb-row">
+          <kbd class="w25"><span class="pr">Shift</span></kbd>
+          <kbd><span class="pr">Z</span></kbd><kbd><span class="pr">X</span></kbd><kbd><span class="pr">C</span></kbd><kbd><span class="pr">V</span></kbd><kbd><span class="pr">B</span></kbd>
+          <kbd><span class="pr">N</span></kbd><kbd><span class="pr">M</span></kbd>
+          <kbd><span class="sh">&lt;</span><span class="pr">,</span></kbd>
+          <kbd><span class="sh">&gt;</span><span class="pr">.</span></kbd>
+          <kbd><span class="sh">?</span><span class="pr">/</span></kbd>
+          <kbd class="w25"><span class="pr">Shift</span></kbd>
+        </div>
+        <div class="kb-row">
+          <kbd class="w15"><span class="pr">Ctrl</span></kbd>
+          <kbd class="w15"><span class="pr">Alt</span></kbd>
+          <kbd class="space"><span class="pr">Space</span></kbd>
+          <kbd class="w15"><span class="pr">Alt</span></kbd>
+          <kbd class="w15"><span class="pr">Ctrl</span></kbd>
+        </div>
       </div>
     </div>
   </div>

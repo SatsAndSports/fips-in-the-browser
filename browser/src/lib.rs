@@ -417,6 +417,26 @@ impl FipsNode {
         self.sessions.prune_idle(max_idle_secs as u64 * 1000)
     }
 
+    /// Get the receive-idle time for a specific session in milliseconds.
+    /// Returns undefined if no session exists for this npub.
+    pub fn session_idle_ms(&self, dest_npub: &str) -> Option<u32> {
+        let x_only = identity::decode_npub(dest_npub).ok()?;
+        let dest_addr = identity::node_addr_from_x_only(&x_only);
+        self.sessions
+            .session_idle_ms(&dest_addr)
+            .map(|ms| ms.min(u32::MAX as u64) as u32)
+    }
+
+    /// Explicitly remove a session (e.g., detected as stale).
+    pub fn remove_session(&mut self, dest_npub: &str) -> bool {
+        if let Ok(x_only) = identity::decode_npub(dest_npub) {
+            let dest_addr = identity::node_addr_from_x_only(&x_only);
+            self.sessions.remove_session(&dest_addr)
+        } else {
+            false
+        }
+    }
+
     /// List all sessions and their states (for UI display).
     pub fn list_sessions(&self) -> Result<JsValue, JsValue> {
         let sessions = self.sessions.list_sessions();

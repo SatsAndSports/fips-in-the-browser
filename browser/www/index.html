@@ -263,35 +263,11 @@ let vmInitScriptUploaded = false;
 let vmInitCommandsSent = false;
 let vmSessionAutoStarted = false;
 let vmInitTriggered = false;
-let sessionKeepaliveTimer = null;
 let vmFocused = false;
 const dnsCache = {};      // hex(ipv6_bytes) → npub
 const pendingIpv6 = {};   // npub → [Uint8Array payload, ...]
 
-function startSessionKeepalive() {
-  if (sessionKeepaliveTimer) return;
-  sessionKeepaliveTimer = setInterval(() => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      try {
-        const packets = node.send_keepalives();
-        if (packets && packets.length) {
-          for (const pkt of packets) {
-            ws.send(pkt);
-          }
-        }
-      } catch (e) {
-        console.warn('Session keepalive failed:', e);
-      }
-    }
-  }, 20000); // 20 seconds
-}
 
-function stopSessionKeepalive() {
-  if (sessionKeepaliveTimer) {
-    clearInterval(sessionKeepaliveTimer);
-    sessionKeepaliveTimer = null;
-  }
-}
 
 function formatDuration(secs) {
   if (secs < 60) return `${secs}s`;
@@ -480,7 +456,6 @@ function connectLink() {
         if (sessionDest && node.is_session_established(sessionDest)) {
           setStatus($sessionStatus, 'Session Established', 'connected');
           $btnBoot.disabled = false;
-          startSessionKeepalive();
           if (!vm) {
             bootVm();
           }
@@ -513,7 +488,6 @@ function connectLink() {
     log('log-info', '[link]', 'WebSocket closed.');
     setStatus($linkStatus, 'Disconnected', 'disconnected');
     setStatus($sessionStatus, 'No session', 'disconnected');
-    stopSessionKeepalive();
     $btnConnect.disabled = false;
     $btnSession.disabled = true;
     $btnBoot.disabled = true;
@@ -757,7 +731,27 @@ function handleGuestEthernet(frame) {
     return;
   }
 
-  // Session established — send through it
+  // Session established — but check if it's stale (no data received in 10s)
+  const idleMs = node.session_idle_ms(destNpub);
+  if (idleMs !== undefined && idleMs > 10000) {
+    node.remove_session(destNpub);
+    log('log-vm', '[sess]', `Session to ${destNpub.slice(0, 15)}... stale (${Math.round(idleMs / 1000)}s idle), reconnecting`);
+    // Fall through: initiate new session and queue packet
+    try {
+      const setupPkt = node.connect_session(destNpub);
+      ws.send(setupPkt);
+      log('log-vm', '[sess]', `Initiating session to ${destNpub.slice(0, 15)}...`);
+    } catch (e) {
+      if (!String(e).includes('already')) {
+        log('log-err', '[sess]', `Session initiation failed: ${e}`);
+      }
+    }
+    if (!pendingIpv6[destNpub]) pendingIpv6[destNpub] = [];
+    pendingIpv6[destNpub].push(new Uint8Array(payload));
+    return;
+  }
+
+  // Session alive — send through it
   const pkt = node.send_ipv6(destNpub, payload);
   ws.send(pkt);
 }

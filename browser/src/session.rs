@@ -174,6 +174,16 @@ impl SessionManager {
         before - self.sessions.len()
     }
 
+    /// Get the receive-idle time for a specific session.
+    pub fn session_idle_ms(&self, dest: &[u8; 16]) -> Option<u64> {
+        self.sessions.get(dest).map(|e| e.idle_ms())
+    }
+
+    /// Explicitly remove a session (e.g., detected as stale).
+    pub fn remove_session(&mut self, dest: &[u8; 16]) -> bool {
+        self.sessions.remove(dest).is_some()
+    }
+
     // ========================================================================
     // Initiate a session (we are the initiator)
     // ========================================================================
